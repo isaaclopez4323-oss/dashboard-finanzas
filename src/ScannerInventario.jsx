@@ -25,22 +25,29 @@ export default function ScannerInventario() {
   };
 
   const buscarProducto = async (codigoEscaneado) => {
-    setCodigo(codigoEscaneado);
+  setCodigo(codigoEscaneado);
 
-    const { data } = await supabase
-      .from("eleventa_inventario")
-      .select("*")
-      .limit(1);
+  const { data, error } = await supabase
+    .from("eleventa_inventario")
+    .select("*")
+    .limit(2000);
 
-    // 🔥 BUSCA MANUALMENTE (evita errores de columnas)
-    const encontrado = data?.find((p) =>
-      Object.values(p).some((v) =>
-        String(v).includes(codigoEscaneado)
-      )
-    );
+  if (error) {
+    alert(error.message);
+    return;
+  }
 
-    setProducto(encontrado || null);
-  };
+  // 🔥 BUSCA EN TODAS LAS COLUMNAS
+  const encontrado = data?.find((p) =>
+    Object.values(p).some((v) =>
+      String(v).includes(codigoEscaneado)
+    )
+  );
+
+  console.log("PRODUCTO ENCONTRADO:", encontrado);
+
+  setProducto(encontrado || null);
+};
 
   return (
     <div style={styles.container}>
