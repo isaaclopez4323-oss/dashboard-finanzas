@@ -30,7 +30,14 @@ export default function App() {
     </ProtectedRoute>
   }
 />
-<Route path="/scanner" element={<ScannerInventario />} />
+<Route
+  path="/scanner"
+  element={
+    <ProtectedRoute>
+      <ScannerInventario />
+    </ProtectedRoute>
+  }
+/>
         <Route
           path="/dashboard"
           element={
