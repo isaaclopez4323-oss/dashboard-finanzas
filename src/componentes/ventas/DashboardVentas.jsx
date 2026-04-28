@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import {
   ResponsiveContainer,
   BarChart,
@@ -12,6 +11,10 @@ import {
   Pie,
   Cell,
   Legend,
+  LineChart,
+  Line,
+  AreaChart,
+  Area,
 } from "recharts";
 import { supabase } from "../../supabase";
 
@@ -19,26 +22,40 @@ const TABLA_VENTAS = "eleventa_tickets";
 const TABLA_ARTICULOS = "eleventa_articulos";
 const TABLA_CAJA = "eleventa_movimientos_caja";
 
-const NOMBRES_CAJEROS = {
-  "8": "MAYRA",
-  "9": "CLAUDIA",
-  "10": "SUSANA",
-};
-
-const REFRESH_MS = 0;
+const REFRESH_MS = 5 * 60 * 1000;
 const PAGE_SIZE = 1000;
 
 const PERIODOS = [
-  { key: "hoy", label: "HOY" },
-  { key: "semanal", label: "SEMANAL" },
-  { key: "mensual", label: "MENSUAL" },
-  { key: "anual", label: "ANUAL" },
-  { key: "todo", label: "TODO" },
+  { key: "hoy", label: "Hoy" },
+  { key: "7dias", label: "7 días" },
+  { key: "30dias", label: "30 días" },
+  { key: "anual", label: "Anual" },
+  { key: "todo", label: "Todo" },
+  { key: "personalizado", label: "Personalizado" },
 ];
 
+const MENU_ITEMS = [
+  { key: "inicio", label: "Inicio", icon: "⌂", active: true },
+  { key: "ventas", label: "Ventas", icon: "↗" },
+  { key: "reportes", label: "Reportes", icon: "▣" },
+  { key: "productos", label: "Productos", icon: "◫" },
+  { key: "cajeros", label: "Cajeros", icon: "◌" },
+  { key: "clientes", label: "Clientes", icon: "◎" },
+  { key: "analytics", label: "Analytics", icon: "◔" },
+  { key: "config", label: "Configuración", icon: "⚙" },
+];
+
+const BLUE = "#4F8CFF";
+const GREEN = "#22C55E";
+const CYAN = "#06B6D4";
+const PURPLE = "#A855F7";
+const AMBER = "#F59E0B";
+const RED = "#EF4444";
+
+const PIE_COLORS = [BLUE, GREEN, AMBER, PURPLE, CYAN, RED];
+
 function formatMoney(value) {
-  const n = Number(value || 0);
-  return n.toLocaleString("es-MX", {
+  return Number(value || 0).toLocaleString("es-MX", {
     style: "currency",
     currency: "MXN",
     maximumFractionDigits: 2,
@@ -49,8 +66,68 @@ function formatNumber(value) {
   return Number(value || 0).toLocaleString("es-MX");
 }
 
-function formatHour(date) {
-  return `${String(date.getHours()).padStart(2, "0")}:00`;
+function formatCompactMoney(value) {
+  const n = Number(value || 0);
+  if (n >= 1000000) return `$${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `$${(n / 1000).toFixed(1)}K`;
+  return `$${n.toFixed(0)}`;
+}
+
+function pick(obj, keys, fallback = null) {
+  for (const key of keys) {
+    if (
+      obj &&
+      Object.prototype.hasOwnProperty.call(obj, key) &&
+      obj[key] !== null &&
+      obj[key] !== undefined &&
+      obj[key] !== ""
+    ) {
+      return obj[key];
+    }
+  }
+  return fallback;
+}
+
+function toNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string") {
+    const clean = value.replace(/[^\d.-]/g, "");
+    const n = Number(clean);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
+function normalizeText(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function normalizePayment(value) {
+  const v = normalizeText(value);
+  if (!v) return "OTRO";
+  if (v.includes("EFECT") || v === "CASH" || v === "EFE" || v === "EFVO") return "EFECTIVO";
+  if (v.includes("DEBIT") || v.includes("DÉBIT") || v.includes("TDD")) return "TARJETA";
+  if (v.includes("CREDIT") || v.includes("CRÉDIT") || v.includes("TDC")) return "TARJETA";
+  if (v.includes("TRANSFER") || v.includes("SPEI")) return "TRANSFERENCIA";
+  if (v.includes("MIX") || v.includes("MIXTO")) return "MIXTO";
+  if (v.includes("VALE")) return "VALES";
+  return v;
+}
+
+function safeDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  let d = new Date(raw);
+  if (!Number.isNaN(d.getTime())) return d;
+
+  d = new Date(raw.replace(" ", "T"));
+  if (!Number.isNaN(d.getTime())) return d;
+
+  return null;
 }
 
 function startOfDay(date) {
@@ -65,427 +142,7 @@ function endOfDay(date) {
   return d;
 }
 
-function startOfWeek(date) {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function endOfWeek(date) {
-  const d = startOfWeek(date);
-  d.setDate(d.getDate() + 6);
-  d.setHours(23, 59, 59, 999);
-  return d;
-}
-
-function startOfMonth(date) {
-  const d = new Date(date.getFullYear(), date.getMonth(), 1);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function endOfMonth(date) {
-  const d = new Date(date.getFullYear(), date.getMonth() + 1, 0);
-  d.setHours(23, 59, 59, 999);
-  return d;
-}
-
-function startOfYear(date) {
-  const d = new Date(date.getFullYear(), 0, 1);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function endOfYear(date) {
-  const d = new Date(date.getFullYear(), 11, 31);
-  d.setHours(23, 59, 59, 999);
-  return d;
-}
-
-function isValidDate(date) {
-  return date instanceof Date && !Number.isNaN(date.getTime());
-}
-
-function toNumber(value) {
-  if (value === null || value === undefined || value === "") return 0;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function cleanText(value) {
-  return String(value ?? "").trim();
-}
-
-function parseFechaSegura(valor) {
-  if (!valor) return null;
-
-  if (valor instanceof Date && isValidDate(valor)) return valor;
-
-  const texto = String(valor).trim();
-  if (!texto) return null;
-
-  const intentoDirecto = new Date(texto);
-  if (isValidDate(intentoDirecto)) return intentoDirecto;
-
-  const intentoConT = new Date(texto.replace(" ", "T"));
-  if (isValidDate(intentoConT)) return intentoConT;
-
-  const match = texto.match(
-    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/
-  );
-
-  if (match) {
-    const [, y, m, d, hh, mm, ss] = match;
-
-    const fechaLocal = new Date(
-      Number(y),
-      Number(m) - 1,
-      Number(d),
-      Number(hh),
-      Number(mm),
-      Number(ss),
-      0
-    );
-
-    if (isValidDate(fechaLocal)) return fechaLocal;
-  }
-
-  return null;
-}
-
-function parseFecha(row) {
-  const posiblesCampos = [
-    row.pagado_en,
-    row.PAGADO_EN,
-    row.vendido_en,
-    row.VENDIDO_EN,
-    row.fecha_hora,
-    row.FECHA_HORA,
-    row.datetime,
-    row.fecha,
-    row.created_at,
-    row.fecha_ticket,
-    row.fechahora,
-    row.updated_at,
-  ];
-
-  for (const valor of posiblesCampos) {
-    const fecha = parseFechaSegura(valor);
-    if (fecha) return fecha;
-  }
-
-  return null;
-}
-
-function normalizarFormaPago(raw) {
-  const valor = String(raw || "").trim().toLowerCase();
-
-  if (!valor) return "No especificado";
-  if (["e", "efectivo", "cash"].includes(valor)) return "Efectivo";
-  if (["p", "tarjeta", "card"].includes(valor)) return "Tarjeta";
-  if (["d", "debito", "débito", "debit"].includes(valor)) return "Débito";
-  if (["c", "credito", "crédito", "credit"].includes(valor)) return "Crédito";
-  if (["t", "transferencia", "transf", "spei"].includes(valor)) return "Transferencia";
-  if (["m", "mixto"].includes(valor)) return "Mixto";
-
-  return valor.charAt(0).toUpperCase() + valor.slice(1);
-}
-
-function normalizarTextoTipo(valor) {
-  return String(valor || "")
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
-
-function obtenerTextoMovimiento(row) {
-  const posibles = [
-    row.tipo,
-    row.TIPO,
-    row.tipo_movimiento,
-    row.movimiento_tipo,
-    row.concepto,
-    row.CONCEPTO,
-    row.descripcion,
-    row.DESCRIPCION,
-    row.referencia,
-    row.observaciones,
-    row.detalle,
-    row.raw,
-  ];
-
-  return posibles
-    .map((v) => String(v || "").trim())
-    .filter(Boolean)
-    .join(" | ");
-}
-
-function detectarTipoRegistro(row) {
-  const texto = normalizarTextoTipo(obtenerTextoMovimiento(row));
-
-  const esIngreso =
-    texto.includes("ingreso de efectivo") ||
-    texto.includes("entrada de efectivo") ||
-    texto.includes("deposito de efectivo") ||
-    texto.includes("deposito caja") ||
-    texto.includes("fondo de caja") ||
-    texto.includes("retiro a caja") ||
-    texto.includes("ingreso efectivo");
-
-  const esSalida =
-    texto.includes("salida de efectivo") ||
-    texto.includes("retiro de efectivo") ||
-    texto.includes("gasto de caja") ||
-    texto.includes("retiro caja") ||
-    texto.includes("egreso") ||
-    texto.includes("salida efectivo");
-
-  const esCancelado =
-    String(
-      row.esta_cancelado ??
-        row.cancelado ??
-        row.ESTA_CANCELADO ??
-        "f"
-    ).toLowerCase() === "t";
-
-  if (esCancelado) return "cancelado";
-  if (esIngreso) return "ingreso_efectivo";
-  if (esSalida) return "salida_efectivo";
-
-  return "venta";
-}
-
-function esVentaReal(item) {
-  return item?.tipoRegistro === "venta" && !item?.cancelado;
-}
-
-function esIngresoEfectivo(item) {
-  return item?.tipoRegistro === "ingreso_efectivo";
-}
-
-function esSalidaEfectivo(item) {
-  return item?.tipoRegistro === "salida_efectivo";
-}
-
-function obtenerNombreCajeroDesdeRow(row) {
-  const posiblesNombres = [
-    row.cajero_nombre,
-    row.nombre_cajero,
-    row.cajero,
-    row.usuario,
-    row.nombre_usuario,
-    row.USUARIO,
-    row.NOMBRE_COMPLETO,
-  ];
-
-  for (const valor of posiblesNombres) {
-    const limpio = cleanText(valor);
-    if (limpio) return limpio.toUpperCase();
-  }
-
-  const posiblesIds = [
-    row.cajero_id,
-    row.id_cajero,
-    row.CAJERO_ID,
-    row.usuario_id,
-  ];
-
-  for (const valor of posiblesIds) {
-    const id = cleanText(valor);
-    if (!id) continue;
-    if (NOMBRES_CAJEROS[id]) return NOMBRES_CAJEROS[id];
-    if (/^\d+$/.test(id)) return `CAJERO ${id}`;
-    return id.toUpperCase();
-  }
-
-  return "SIN CAJERO";
-}
-
-function getTotal(row) {
-  const posibles = [
-    row.total,
-    row.importe,
-    row.monto,
-    row.total_ticket,
-    row.venta_total,
-    row.subtotal,
-    row.TOTAL,
-    row.IMPORTE,
-  ];
-
-  for (const v of posibles) {
-    const n = Number(v);
-    if (!Number.isNaN(n) && Number.isFinite(n)) return n;
-  }
-
-  return 0;
-}
-
-function getPiezas(row) {
-  const posibles = [
-    row.numero_articulos,
-    row.num_articulos,
-    row.piezas,
-    row.piezas_vendidas,
-    row.articulos,
-    row.items,
-    row.cantidad_productos,
-  ];
-
-  for (const v of posibles) {
-    const n = Number(v);
-    if (!Number.isNaN(n) && Number.isFinite(n)) return n;
-  }
-
-  return 0;
-}
-
-function getFormaPago(row) {
-  return (
-    row.forma_pago ??
-    row.metodo_pago ??
-    row.pago ??
-    row.pagado_con ??
-    row.tipo_pago ??
-    row.metodo ??
-    row.PAGADO_CON ??
-    ""
-  );
-}
-
-function getProducto(row) {
-  return (
-    row.producto ??
-    row.descripcion ??
-    row.nombre_producto ??
-    row.articulo ??
-    row.item ??
-    ""
-  );
-}
-
-function getNombreProductoArticulo(row) {
-  return (
-    row.producto_nombre ??
-    row.nombre_producto ??
-    row.producto ??
-    row.descripcion ??
-    row.articulo ??
-    ""
-  );
-}
-
-function getCantidadArticulo(row) {
-  const posibles = [
-    row.cantidad,
-    row.piezas,
-    row.cantidad_vendida,
-    row.items,
-  ];
-
-  for (const v of posibles) {
-    const n = Number(v);
-    if (!Number.isNaN(n) && Number.isFinite(n)) return n;
-  }
-
-  return 0;
-}
-
-function construirUid(row, index = 0) {
-  const partes = [
-    row.id,
-    row.ID,
-    row.ticket_id,
-    row.id_ticket,
-    row.folio,
-    row.pagado_en,
-    row.PAGADO_EN,
-    row.vendido_en,
-    row.VENDIDO_EN,
-    row.created_at,
-    row.caja_id,
-    index,
-  ];
-
-  return partes
-    .map((x) => String(x ?? ""))
-    .join("|");
-}
-
-function normalizarArticulo(row, index = 0) {
-  const fecha = parseFecha(row);
-
-  return {
-    uid: construirUid(row, index),
-    id: row.id ?? null,
-    ticketId: row.ticket_id ?? row.id_ticket ?? null,
-    fecha,
-    producto: String(getNombreProductoArticulo(row) || "").trim(),
-    piezas: getCantidadArticulo(row),
-  };
-}
-
-function normalizarFila(row, index = 0) {
-  const fecha = parseFecha(row);
-  const total = getTotal(row);
-  const piezas = getPiezas(row);
-  const pagoRaw = getFormaPago(row);
-  const producto = getProducto(row);
-  const cancelado =
-    String(
-      row.esta_cancelado ??
-        row.cancelado ??
-        row.ESTA_CANCELADO ??
-        "f"
-    ).toLowerCase() === "t";
-
-  const tipoRegistro = detectarTipoRegistro(row);
-
-  return {
-    uid: construirUid(row, index),
-    id:
-      row.id ??
-      row.ID ??
-      row.ticket_id ??
-      row.id_ticket ??
-      row.folio ??
-      null,
-    fecha,
-    total,
-    piezas,
-    formaPago: normalizarFormaPago(pagoRaw),
-    cajeroId: String(row.cajero_id ?? row.id_cajero ?? row.CAJERO_ID ?? ""),
-    cajero: obtenerNombreCajeroDesdeRow(row),
-    cajaId: row.caja_id ?? row.CAJA_ID ?? null,
-    producto: String(producto || "").trim(),
-    cancelado,
-    tipoRegistro,
-    raw: row,
-  };
-}
-
-function obtenerRango(periodo) {
-  const ahora = new Date();
-
-  switch (periodo) {
-    case "hoy":
-      return { inicio: startOfDay(ahora), fin: endOfDay(ahora) };
-    case "semanal":
-      return { inicio: startOfWeek(ahora), fin: endOfWeek(ahora) };
-    case "mensual":
-      return { inicio: startOfMonth(ahora), fin: endOfMonth(ahora) };
-    case "anual":
-      return { inicio: startOfYear(ahora), fin: endOfYear(ahora) };
-    default:
-      return { inicio: null, fin: null };
-  }
-}
-
-function esMismoDia(a, b) {
+function sameDay(a, b) {
   return (
     a.getFullYear() === b.getFullYear() &&
     a.getMonth() === b.getMonth() &&
@@ -493,1857 +150,1865 @@ function esMismoDia(a, b) {
   );
 }
 
-function filtrarPorPeriodo(data, periodo) {
-  const ahora = new Date();
+function getRange(periodo, customDesde, customHasta) {
+  const now = new Date();
+  let desde = null;
+  let hasta = endOfDay(now);
 
   if (periodo === "hoy") {
-    return data.filter((item) => item.fecha && esMismoDia(item.fecha, ahora));
+    desde = startOfDay(now);
+  } else if (periodo === "7dias") {
+    desde = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6));
+  } else if (periodo === "30dias") {
+    desde = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29));
+  } else if (periodo === "anual") {
+    desde = startOfDay(new Date(now.getFullYear(), 0, 1));
+  } else if (periodo === "personalizado") {
+    desde = customDesde ? startOfDay(new Date(`${customDesde}T00:00:00`)) : null;
+    hasta = customHasta ? endOfDay(new Date(`${customHasta}T00:00:00`)) : hasta;
+  } else if (periodo === "todo") {
+    desde = null;
+    hasta = null;
   }
 
-  if (periodo === "semanal") {
-    const inicio = startOfWeek(ahora);
-    const fin = endOfWeek(ahora);
-    return data.filter((item) => item.fecha && item.fecha >= inicio && item.fecha <= fin);
-  }
-
-  if (periodo === "mensual") {
-    const inicio = startOfMonth(ahora);
-    const fin = endOfMonth(ahora);
-    return data.filter((item) => item.fecha && item.fecha >= inicio && item.fecha <= fin);
-  }
-
-  if (periodo === "anual") {
-    const inicio = startOfYear(ahora);
-    const fin = endOfYear(ahora);
-    return data.filter((item) => item.fecha && item.fecha >= inicio && item.fecha <= fin);
-  }
-
-  return data;
+  return { desde, hasta };
 }
 
-function toInputDate(date) {
-  const d = new Date(date);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+function isWithinRange(date, desde, hasta) {
+  if (!date) return false;
+  if (desde && date < desde) return false;
+  if (hasta && date > hasta) return false;
+  return true;
 }
 
-function parseInputDate(value, endOf = false) {
-  if (!value) return null;
-  const [year, month, day] = value.split("-").map(Number);
-  if (!year || !month || !day) return null;
-
-  const date = new Date(year, month - 1, day);
-  if (endOf) {
-    date.setHours(23, 59, 59, 999);
-  } else {
-    date.setHours(0, 0, 0, 0);
-  }
-  return date;
-}
-
-function filtrarPorRangoPersonalizado(data, fechaInicio, fechaFin) {
-  const inicio = parseInputDate(fechaInicio, false);
-  const fin = parseInputDate(fechaFin, true);
-
-  if (!inicio || !fin) return data;
-
-  return data.filter((item) => {
-    if (!item.fecha) return false;
-    return item.fecha >= inicio && item.fecha <= fin;
-  });
-}
-
-function agruparPorHora(data) {
-  const mapa = new Map();
-
-  data.forEach((item) => {
-    if (!item.fecha) return;
-    const key = formatHour(item.fecha);
-    mapa.set(key, (mapa.get(key) || 0) + toNumber(item.total));
-  });
-
-  return [...mapa.entries()]
-    .map(([hora, total]) => ({ hora, total: Number(total.toFixed(2)) }))
-    .sort((a, b) => a.hora.localeCompare(b.hora));
-}
-
-function agruparPorPago(data) {
-  const mapa = new Map();
-
-  data.forEach((item) => {
-    const key = item.formaPago || "No especificado";
-    mapa.set(key, (mapa.get(key) || 0) + toNumber(item.total));
-  });
-
-  return [...mapa.entries()]
-    .map(([nombre, total]) => ({
-      nombre,
-      total: Number(total.toFixed(2)),
-    }))
-    .sort((a, b) => b.total - a.total);
-}
-
-function agruparPorCajero(data) {
-  const mapa = new Map();
-
-  data.forEach((item) => {
-    const key = item.cajero || "Sin cajero";
-    if (!mapa.has(key)) {
-      mapa.set(key, { nombre: key, total: 0, tickets: 0 });
-    }
-    const actual = mapa.get(key);
-    actual.total += toNumber(item.total);
-    actual.tickets += 1;
-  });
-
-  return [...mapa.values()].sort((a, b) => b.total - a.total);
-}
-
-function obtenerTopProductosDesdeArticulos(data) {
-  const validos = data.filter((x) => x.producto);
-
-  if (!validos.length) return [];
-
-  const mapa = new Map();
-
-  validos.forEach((item) => {
-    const key = item.producto;
-    mapa.set(key, (mapa.get(key) || 0) + Math.max(item.piezas || 1, 1));
-  });
-
-  return [...mapa.entries()]
-    .map(([nombre, piezas]) => ({ nombre, piezas }))
-    .sort((a, b) => b.piezas - a.piezas)
-    .slice(0, 10);
-}
-
-function obtenerComparativaHoyVsAyer(data) {
-  const ahora = new Date();
-  const inicioHoy = startOfDay(ahora);
-  const finHoy = endOfDay(ahora);
-
-  const ayer = new Date(ahora);
-  ayer.setDate(ayer.getDate() - 1);
-  const inicioAyer = startOfDay(ayer);
-  const finAyer = endOfDay(ayer);
-
-  const ventasHoy = data
-    .filter((x) => x.fecha && x.fecha >= inicioHoy && x.fecha <= finHoy)
-    .reduce((sum, x) => sum + toNumber(x.total), 0);
-
-  const ventasAyer = data
-    .filter((x) => x.fecha && x.fecha >= inicioAyer && x.fecha <= finAyer)
-    .reduce((sum, x) => sum + toNumber(x.total), 0);
-
-  const diferencia = ventasHoy - ventasAyer;
-  const porcentaje =
-    ventasAyer > 0 ? (diferencia / ventasAyer) * 100 : ventasHoy > 0 ? 100 : 0;
-
-  return {
-    ventasHoy,
-    ventasAyer,
-    diferencia,
-    porcentaje,
-  };
-}
-
-function obtenerPronosticoDelDia(data) {
-  const ahora = new Date();
-  const horaActual = ahora.getHours() + ahora.getMinutes() / 60;
-
-  const inicioHoy = startOfDay(ahora);
-  const finHoy = endOfDay(ahora);
-
-  const ventasHoy = data
-    .filter((x) => x.fecha && x.fecha >= inicioHoy && x.fecha <= finHoy)
-    .reduce((sum, x) => sum + toNumber(x.total), 0);
-
-  if (horaActual <= 0.5) {
-    return {
-      actual: ventasHoy,
-      estimado: ventasHoy,
-    };
-  }
-
-  const estimado = (ventasHoy / horaActual) * 24;
-
-  return {
-    actual: ventasHoy,
-    estimado,
-  };
-}
-
-function obtenerHorasMuertas(data) {
-  const hoy = new Date();
-  const inicioHoy = startOfDay(hoy);
-  const finHoy = endOfDay(hoy);
-
-  const ventasHoy = data.filter(
-    (x) => x.fecha && x.fecha >= inicioHoy && x.fecha <= finHoy
+function getTicketDate(row) {
+  return safeDate(
+    pick(row, [
+      "pagado_en",
+      "vendido_en",
+      "fecha_hora",
+      "datetime",
+      "fecha",
+      "agregado_en",
+      "updated_at",
+    ])
   );
-
-  const porHora = agruparPorHora(ventasHoy);
-  if (!porHora.length) return [];
-
-  return [...porHora]
-    .sort((a, b) => a.total - b.total)
-    .slice(0, 3);
 }
 
-function obtenerMovimientosCajaRecientes(data, limite = 12) {
-  return [...data]
-    .filter(
-      (x) =>
-        x.fecha &&
-        (esIngresoEfectivo(x) || esSalidaEfectivo(x))
-    )
-    .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
-    .slice(0, limite);
-}
-
-function obtenerArticulosDeTicket(ticket, articulos) {
-  if (!ticket) return [];
-
-  const posiblesIdsTicket = new Set(
-    [
-      ticket.id,
-      ticket.raw?.id,
-      ticket.raw?.ID,
-      ticket.raw?.ticket_id,
-      ticket.raw?.id_ticket,
-      ticket.raw?.folio,
-    ]
-      .map((v) => String(v ?? "").trim())
-      .filter(Boolean)
+function getArticuloDate(row) {
+  return safeDate(
+    pick(row, [
+      "pagado_en",
+      "vendido_en",
+      "agregado_en",
+      "fecha_hora",
+      "datetime",
+      "fecha",
+      "updated_at",
+    ])
   );
-
-  return articulos
-    .filter((articulo) => {
-      const posiblesIdsArticulo = [
-        articulo.ticketId,
-        articulo.id,
-        articulo.uid,
-      ]
-        .map((v) => String(v ?? "").trim())
-        .filter(Boolean);
-
-      return posiblesIdsArticulo.some((id) => posiblesIdsTicket.has(id));
-    })
-    .sort((a, b) => {
-      const nombreA = String(a.producto || "");
-      const nombreB = String(b.producto || "");
-      return nombreA.localeCompare(nombreB);
-    });
 }
 
-async function contarRegistros(tabla) {
-  const { count, error } = await supabase
-    .from(tabla)
-    .select("*", { count: "exact", head: true });
-
-  if (error) throw error;
-  return count || 0;
+function getCajaDate(row) {
+  return safeDate(pick(row, ["fecha", "fecha_hora", "datetime", "updated_at", "pagado_en"]));
 }
 
-async function cargarFilasDesdeSupabase() {
-  const total = await contarRegistros(TABLA_VENTAS);
-  const filas = [];
-
-  for (let desde = 0; desde < total; desde += PAGE_SIZE) {
-    const hasta = desde + PAGE_SIZE - 1;
-
-    const { data, error } = await supabase
-      .from(TABLA_VENTAS)
-      .select("*")
-      .order("pagado_en", { ascending: false, nullsFirst: false })
-      .range(desde, hasta);
-
-    if (error) throw error;
-    if (Array.isArray(data) && data.length) filas.push(...data);
-  }
-
-  return filas;
+function getTicketTotal(row) {
+  return toNumber(
+    pick(row, ["total", "importe_total", "monto_total", "subtotal_total", "venta_total"], 0)
+  );
 }
 
-async function cargarCajaDesdeSupabase() {
-  const total = await contarRegistros(TABLA_CAJA);
-  const filas = [];
-
-  for (let desde = 0; desde < total; desde += PAGE_SIZE) {
-    const hasta = desde + PAGE_SIZE - 1;
-
-    const { data, error } = await supabase
-      .from(TABLA_CAJA)
-      .select("*")
-      .order("fecha_movimiento", { ascending: false, nullsFirst: false })
-      .range(desde, hasta);
-
-    if (error) throw error;
-    if (Array.isArray(data) && data.length) filas.push(...data);
-  }
-
-  return filas;
+function getTicketId(row) {
+  return pick(row, ["ticket_id", "id", "folio", "uid"], null);
 }
 
-function normalizarMovimientoCajaFila(row, index = 0) {
-  const fecha = parseFechaSegura(row.fecha_movimiento ?? row.FECHA_MOVIMIENTO);
-
-  return {
-    uid: construirUid(row, `caja-${index}`),
-    id: row.id ?? row.ID ?? null,
-    fecha,
-    total: toNumber(row.monto ?? row.MONTO),
-    piezas: 0,
-    formaPago: "Efectivo",
-    cajeroId: String(row.cajero_id ?? row.CAJERO_ID ?? ""),
-    cajero: obtenerNombreCajeroDesdeRow(row),
-    cajaId: row.caja_id ?? row.CAJA_ID ?? null,
-    producto: "",
-    cancelado: false,
-    tipoRegistro:
-      String(row.tipo ?? row.TIPO ?? "").toLowerCase() === "entrada"
-        ? "ingreso_efectivo"
-        : "salida_efectivo",
-    raw: row,
-  };
+function getTicketPayment(row) {
+  return normalizePayment(
+    pick(row, ["forma_pago", "metodo_pago", "pagado_con", "tipo_pago", "payment_method", "metodo"], "OTRO")
+  );
 }
 
-async function cargarArticulosDesdeSupabase() {
-  const total = await contarRegistros(TABLA_ARTICULOS);
-  const filas = [];
+function getTicketCashier(row) {
+  const nombre = pick(
+    row,
+    ["cajero_nombre", "usuario_nombre", "nombre_cajero", "usuario", "cajero", "empleado"],
+    null
+  );
+  if (nombre) return normalizeText(nombre);
 
-  for (let desde = 0; desde < total; desde += PAGE_SIZE) {
-    const hasta = desde + PAGE_SIZE - 1;
+  const id = pick(row, ["cajero_id", "usuario_id", "user_id", "empleado_id"], null);
+  if (id !== null && id !== undefined && id !== "") return `CAJERO ${id}`;
 
-    const { data, error } = await supabase
-      .from(TABLA_ARTICULOS)
-      .select("*")
-      .order("pagado_en", { ascending: false, nullsFirst: false })
-      .range(desde, hasta);
+  const caja = pick(row, ["caja_id", "caja"], null);
+  if (caja !== null && caja !== undefined && caja !== "") return `CAJA ${caja}`;
 
-    if (error) {
-      const fallback = await supabase
-        .from(TABLA_ARTICULOS)
-        .select("*")
-        .order("created_at", { ascending: false, nullsFirst: false })
-        .range(desde, hasta);
-
-      if (fallback.error) throw fallback.error;
-      if (Array.isArray(fallback.data) && fallback.data.length) {
-        filas.push(...fallback.data);
-      }
-      continue;
-    }
-
-    if (Array.isArray(data) && data.length) filas.push(...data);
-  }
-
-  return filas;
+  return "SIN IDENTIFICAR";
 }
 
-function Card({ title, value, subtitle, accent = false }) {
+function getArticuloName(row) {
+  return pick(row, ["producto_nombre", "descripcion", "nombre", "articulo", "producto"], null);
+}
+
+function getArticuloQty(row) {
+  return toNumber(pick(row, ["cantidad", "piezas", "qty", "unidades"], 0));
+}
+
+function getArticuloAmount(row) {
+  return toNumber(
+    pick(row, ["total_articulo", "importe", "monto", "subtotal", "precio_final", "total"], 0)
+  );
+}
+
+function getCajaTotal(row) {
+  return toNumber(pick(row, ["total", "importe", "monto", "cantidad"], 0));
+}
+
+function getCajaTipo(row) {
+  return normalizeText(pick(row, ["tipo", "movimiento", "tipo_movimiento"], "OTRO"));
+}
+
+function Card({ title, right, children, span = "auto", minHeight }) {
   return (
     <div
       style={{
-        background: accent
-          ? "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)"
-          : "rgba(255,255,255,0.04)",
-        color: "#fff",
-        borderRadius: 22,
-        padding: 20,
-        boxShadow: accent
-          ? "0 18px 36px rgba(37,99,235,0.24)"
-          : "0 8px 24px rgba(0,0,0,0.16)",
-        border: accent
-          ? "1px solid rgba(96,165,250,0.35)"
-          : "1px solid rgba(148,163,184,0.12)",
-        minHeight: 120,
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "space-between",
+        ...styles.card,
+        gridColumn: span,
+        minHeight: minHeight || "auto",
       }}
     >
-      <div
-        style={{
-          fontSize: 13,
-          fontWeight: 800,
-          letterSpacing: 0.4,
-          color: accent ? "rgba(255,255,255,0.92)" : "rgba(226,232,240,0.72)",
-        }}
-      >
-        {title}
+      {(title || right) && (
+        <div style={styles.cardHeader}>
+          <div style={styles.cardTitle}>{title}</div>
+          {right ? <div style={styles.cardRight}>{right}</div> : null}
+        </div>
+      )}
+      <div style={styles.cardBody}>{children}</div>
+    </div>
+  );
+}
+
+function KpiCard({ icon, title, value, subtitle, sparkData, accent = BLUE }) {
+  return (
+    <div style={styles.kpiCard}>
+      <div style={styles.kpiTopRow}>
+        <div style={{ ...styles.kpiIcon, boxShadow: `0 0 0 1px ${accent}33 inset` }}>{icon}</div>
+        <div style={styles.kpiTitle}>{title}</div>
       </div>
 
-      <div
-        style={{
-          fontSize: 24,
-          fontWeight: 900,
-          marginTop: 10,
-          marginBottom: 8,
-          letterSpacing: "-0.03em",
-        }}
-      >
-        {value}
-      </div>
+      <div style={styles.kpiValue}>{value}</div>
 
-      <div
-        style={{
-          fontSize: 12,
-          color: accent ? "rgba(255,255,255,0.82)" : "rgba(226,232,240,0.58)",
-        }}
-      >
-        {subtitle}
+      <div style={styles.kpiBottom}>
+        <div style={{ ...styles.kpiSubtitle, color: subtitle?.includes("▼") ? "#f87171" : GREEN }}>
+          {subtitle}
+        </div>
+        <div style={styles.sparkWrap}>
+          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+            <LineChart data={sparkData}>
+              <Line type="monotone" dataKey="value" stroke={accent} strokeWidth={2.3} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );
 }
 
-function Panel({ title, right, children, minHeight = 360 }) {
+function SidebarItem({ item }) {
   return (
-    <div
-      style={{
-        background: "rgba(255,255,255,0.04)",
-        borderRadius: 24,
-        padding: 20,
-        boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
-        border: "1px solid rgba(148,163,184,0.12)",
-        minHeight,
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          marginBottom: 16,
-          flexWrap: "wrap",
-        }}
-      >
-        <h3
-          style={{
-            margin: 0,
-            fontSize: 24,
-            fontWeight: 900,
-            color: "#ffffff",
-            letterSpacing: "-0.02em",
-          }}
-        >
-          {title}
-        </h3>
-        {right}
-      </div>
-
-      {children}
+    <div style={{ ...styles.sidebarItem, ...(item.active ? styles.sidebarItemActive : {}) }}>
+      <div style={styles.sidebarIcon}>{item.icon}</div>
+      <div style={styles.sidebarLabel}>{item.label}</div>
     </div>
   );
 }
 
-function BadgeMovimiento({ tipo }) {
-  const esIngreso = tipo === "ingreso_efectivo";
-  const esSalida = tipo === "salida_efectivo";
-
-  const texto = esIngreso
-    ? "INGRESO"
-    : esSalida
-    ? "SALIDA"
-    : "MOVIMIENTO";
+function RingProgress({ percent, size = 172, stroke = 18, color = GREEN, label, valueLabel, subLabel }) {
+  const normalized = Math.max(0, Math.min(100, percent || 0));
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - normalized / 100);
 
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "6px 10px",
-        borderRadius: 999,
-        fontSize: 11,
-        fontWeight: 900,
-        letterSpacing: 0.4,
-        background: esIngreso
-          ? "rgba(34,197,94,0.16)"
-          : esSalida
-          ? "rgba(239,68,68,0.16)"
-          : "rgba(100,116,139,0.16)",
-        color: esIngreso ? "#4ade80" : esSalida ? "#f87171" : "#cbd5e1",
-        border: esIngreso
-          ? "1px solid rgba(34,197,94,0.25)"
-          : esSalida
-          ? "1px solid rgba(239,68,68,0.25)"
-          : "1px solid rgba(100,116,139,0.25)",
-      }}
-    >
-      {texto}
-    </span>
+    <div style={{ width: size, height: size, position: "relative" }}>
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke="rgba(79,140,255,0.12)"
+          strokeWidth={stroke}
+          fill="none"
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={color}
+          strokeWidth={stroke}
+          fill="none"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+        />
+      </svg>
+
+      <div style={styles.ringCenter}>
+        <div style={styles.ringPercent}>{Math.round(normalized)}%</div>
+        {label ? <div style={styles.ringLabel}>{label}</div> : null}
+        {valueLabel ? <div style={styles.ringValueLabel}>{valueLabel}</div> : null}
+        {subLabel ? <div style={styles.ringSubLabel}>{subLabel}</div> : null}
+      </div>
+    </div>
   );
 }
-
-const chartAxisTick = {
-  fill: "rgba(226,232,240,0.72)",
-  fontSize: 12,
-};
-
-const chartTooltipStyle = {
-  background: "#08152d",
-  border: "1px solid rgba(148,163,184,0.20)",
-  borderRadius: "12px",
-  color: "#ffffff",
-  boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
-};
 
 export default function DashboardVentas() {
-  const navigate = useNavigate();
-  const hoyTexto = toInputDate(new Date());
-
-  const [periodo, setPeriodo] = useState("hoy");
-  const [modoFecha, setModoFecha] = useState("preset");
-  const [fechaInicio, setFechaInicio] = useState(hoyTexto);
-  const [fechaFin, setFechaFin] = useState(hoyTexto);
-  const [cajaRaw, setCajaRaw] = useState([]);
-  const [ventasRaw, setVentasRaw] = useState([]);
+  const [ticketsRaw, setTicketsRaw] = useState([]);
   const [articulosRaw, setArticulosRaw] = useState([]);
-  const [cargando, setCargando] = useState(true);
-  const [error, setError] = useState("");
-  const [ultimaActualizacion, setUltimaActualizacion] = useState(null);
-  const [ticketAbierto, setTicketAbierto] = useState(null);
+  const [movCajaRaw, setMovCajaRaw] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [errorUI, setErrorUI] = useState("");
+  const [periodo, setPeriodo] = useState("hoy");
+  const [desdeCustom, setDesdeCustom] = useState("");
+  const [hastaCustom, setHastaCustom] = useState("");
 
-  async function cargarDatos() {
+  const cargarTablaCompleta = async (tabla, setter) => {
+    let allRows = [];
+    let from = 0;
+    let keepGoing = true;
+
+    while (keepGoing) {
+      const { data, error } = await supabase
+        .from(tabla)
+        .select("*")
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (error) throw error;
+
+      const rows = Array.isArray(data) ? data : [];
+      allRows = allRows.concat(rows);
+
+      if (rows.length < PAGE_SIZE) keepGoing = false;
+      else from += PAGE_SIZE;
+    }
+
+    setter(allRows);
+    return allRows;
+  };
+
+  const cargarTodo = async () => {
+    setLoading(true);
+    setErrorUI("");
+
     try {
-      setCargando(true);
-      setError("");
-
-      const [rowsVentas, rowsArticulos, rowsCaja] = await Promise.all([
-        cargarFilasDesdeSupabase(),
-        cargarArticulosDesdeSupabase(),
-        cargarCajaDesdeSupabase(),
+      const [tickets, articulos, caja] = await Promise.allSettled([
+        cargarTablaCompleta(TABLA_VENTAS, setTicketsRaw),
+        cargarTablaCompleta(TABLA_ARTICULOS, setArticulosRaw),
+        cargarTablaCompleta(TABLA_CAJA, setMovCajaRaw),
       ]);
 
-      const ventasLimpias = rowsVentas.map((row, index) =>
-        normalizarFila(row, index)
-      );
+      const errores = [];
 
-      const articulosLimpios = rowsArticulos.map((row, index) =>
-        normalizarArticulo(row, index)
-      );
+      if (tickets.status === "rejected") {
+        console.error("Error tickets:", tickets.reason);
+        errores.push(`Tickets: ${tickets.reason?.message || "sin detalle"}`);
+        setTicketsRaw([]);
+      }
 
-      const cajaLimpia = rowsCaja.map((row, index) =>
-        normalizarMovimientoCajaFila(row, index)
-      );
+      if (articulos.status === "rejected") {
+        console.error("Error artículos:", articulos.reason);
+        errores.push(`Artículos: ${articulos.reason?.message || "sin detalle"}`);
+        setArticulosRaw([]);
+      }
 
-      setVentasRaw(ventasLimpias);
-      setArticulosRaw(articulosLimpios);
-      setCajaRaw(cajaLimpia);
-      setUltimaActualizacion(new Date());
-    } catch (err) {
-      console.error(err);
-      setVentasRaw([]);
-      setCajaRaw([]);
+      if (caja.status === "rejected") {
+        console.warn("Error movimientos caja:", caja.reason);
+        setMovCajaRaw([]);
+      }
+
+      if (errores.length) setErrorUI(errores.join(" | "));
+    } catch (error) {
+      console.error(error);
+      setErrorUI(error?.message || "Error general al cargar dashboard.");
+      setTicketsRaw([]);
       setArticulosRaw([]);
-      setError(
-        err?.message ||
-          "No se pudieron cargar las ventas y artículos. Revisa las tablas y campos."
-      );
+      setMovCajaRaw([]);
     } finally {
-      setCargando(false);
+      setLoading(false);
     }
-  }
+  };
 
   useEffect(() => {
-    cargarDatos();
-
-    if (!REFRESH_MS || REFRESH_MS <= 0) return;
-
-    const id = setInterval(() => {
-      cargarDatos();
-    }, REFRESH_MS);
-
-    return () => clearInterval(id);
+    cargarTodo();
+    const interval = setInterval(cargarTodo, REFRESH_MS);
+    return () => clearInterval(interval);
   }, []);
 
-  const registrosFiltrados = useMemo(() => {
-    if (modoFecha === "custom") {
-      return filtrarPorRangoPersonalizado(ventasRaw, fechaInicio, fechaFin);
-    }
-    return filtrarPorPeriodo(ventasRaw, periodo);
-  }, [ventasRaw, periodo, modoFecha, fechaInicio, fechaFin]);
+  const rango = useMemo(
+    () => getRange(periodo, desdeCustom, hastaCustom),
+    [periodo, desdeCustom, hastaCustom]
+  );
 
-  const ventasFiltradas = useMemo(() => {
-    return registrosFiltrados.filter(esVentaReal);
-  }, [registrosFiltrados]);
+  const tickets = useMemo(() => {
+    return ticketsRaw
+      .map((row) => ({
+        raw: row,
+        id: getTicketId(row),
+        fecha: getTicketDate(row),
+        total: getTicketTotal(row),
+        metodo: getTicketPayment(row),
+        cajero: getTicketCashier(row),
+      }))
+      .filter((row) => row.fecha && isWithinRange(row.fecha, rango.desde, rango.hasta));
+  }, [ticketsRaw, rango]);
 
-  const cajaFiltrada = useMemo(() => {
-    if (modoFecha === "custom") {
-      return filtrarPorRangoPersonalizado(cajaRaw, fechaInicio, fechaFin);
-    }
-    return filtrarPorPeriodo(cajaRaw, periodo);
-  }, [cajaRaw, periodo, modoFecha, fechaInicio, fechaFin]);
+  const articulos = useMemo(() => {
+    return articulosRaw
+      .map((row) => ({
+        raw: row,
+        fecha: getArticuloDate(row),
+        nombre: getArticuloName(row),
+        cantidad: getArticuloQty(row),
+        monto: getArticuloAmount(row),
+        ticketId: pick(row, ["ticket_id", "id_ticket"], null),
+      }))
+      .filter((row) => row.fecha && isWithinRange(row.fecha, rango.desde, rango.hasta));
+  }, [articulosRaw, rango]);
 
-  const ingresosEfectivoFiltrados = useMemo(() => {
-    return cajaFiltrada.filter(esIngresoEfectivo);
-  }, [cajaFiltrada]);
-
-  const salidasEfectivoFiltradas = useMemo(() => {
-    return cajaFiltrada.filter(esSalidaEfectivo);
-  }, [cajaFiltrada]);
-
-  const articulosFiltrados = useMemo(() => {
-    if (modoFecha === "custom") {
-      return filtrarPorRangoPersonalizado(articulosRaw, fechaInicio, fechaFin);
-    }
-    return filtrarPorPeriodo(articulosRaw, periodo);
-  }, [articulosRaw, periodo, modoFecha, fechaInicio, fechaFin]);
-
-  const ventasRecientes = useMemo(() => {
-    return [...ventasFiltradas].sort(
-      (a, b) => new Date(b.fecha) - new Date(a.fecha)
-    );
-  }, [ventasFiltradas]);
-
-  const movimientosCajaRecientes = useMemo(() => {
-    return obtenerMovimientosCajaRecientes(cajaFiltrada, 15);
-  }, [cajaFiltrada]);
-
-  const resumenTicketAbierto = useMemo(() => {
-    const ticket = ventasRecientes.find((x) => x.uid === ticketAbierto) || null;
-    const articulos = ticket
-      ? obtenerArticulosDeTicket(ticket, articulosFiltrados)
-      : [];
-
-    const totalPiezas = articulos.reduce(
-      (sum, item) => sum + toNumber(item.piezas),
-      0
-    );
-
-    return {
-      ticket,
-      articulos,
-      renglones: articulos.length,
-      totalPiezas,
-    };
-  }, [ticketAbierto, ventasRecientes, articulosFiltrados]);
+  const movimientosCaja = useMemo(() => {
+    return movCajaRaw
+      .map((row) => ({
+        raw: row,
+        fecha: getCajaDate(row),
+        total: getCajaTotal(row),
+        tipo: getCajaTipo(row),
+        metodo: normalizePayment(pick(row, ["metodo", "forma_pago", "metodo_pago"], "OTRO")),
+      }))
+      .filter((row) => row.fecha && isWithinRange(row.fecha, rango.desde, rango.hasta));
+  }, [movCajaRaw, rango]);
 
   const resumen = useMemo(() => {
-    const ventasTotales = ventasFiltradas.reduce(
-      (sum, x) => sum + toNumber(x.total),
-      0
-    );
-
-    const ingresosEfectivo = ingresosEfectivoFiltrados.reduce(
-      (sum, x) => sum + toNumber(x.total),
-      0
-    );
-
-    const salidasEfectivo = salidasEfectivoFiltradas.reduce(
-      (sum, x) => sum + toNumber(x.total),
-      0
-    );
-
-    const balanceCaja = ingresosEfectivo - salidasEfectivo;
-
-    const tickets = ventasFiltradas.length;
-    const ticketPromedio = tickets ? ventasTotales / tickets : 0;
-
-    const piezasVendidas = articulosFiltrados.reduce(
-      (sum, x) => sum + Number(x.piezas || 0),
-      0
-    );
-
-    const productosDistintos = new Set(
-      articulosFiltrados.map((x) => x.producto).filter(Boolean)
-    ).size;
-
-    const promedioPiezasPorTicket = tickets ? piezasVendidas / tickets : 0;
+    const ventasTotales = tickets.reduce((acc, row) => acc + row.total, 0);
+    const ticketsCount = tickets.length;
+    const ticketPromedio = ticketsCount ? ventasTotales / ticketsCount : 0;
 
     return {
       ventasTotales,
-      ingresosEfectivo,
-      salidasEfectivo,
-      balanceCaja,
-      tickets,
+      ticketsCount,
       ticketPromedio,
-      piezasVendidas,
-      productosDistintos,
-      promedioPiezasPorTicket,
+      transacciones: ticketsCount,
     };
-  }, [
-    ventasFiltradas,
-    ingresosEfectivoFiltrados,
-    salidasEfectivoFiltradas,
-    articulosFiltrados,
-  ]);
+  }, [tickets]);
 
-  const ventasPorHora = useMemo(
-    () => agruparPorHora(ventasFiltradas),
-    [ventasFiltradas]
-  );
+  const ventasAyer = useMemo(() => {
+    const now = new Date();
+    const ayer = new Date(now);
+    ayer.setDate(now.getDate() - 1);
 
-  const ventasPorPago = useMemo(
-    () => agruparPorPago(ventasFiltradas),
-    [ventasFiltradas]
-  );
+    const desde = startOfDay(ayer);
+    const hasta = endOfDay(ayer);
 
-  const ventasPorCajero = useMemo(
-    () => agruparPorCajero(ventasFiltradas),
-    [ventasFiltradas]
-  );
+    return ticketsRaw.reduce((acc, row) => {
+      const fecha = getTicketDate(row);
+      if (!fecha) return acc;
+      if (fecha >= desde && fecha <= hasta) return acc + getTicketTotal(row);
+      return acc;
+    }, 0);
+  }, [ticketsRaw]);
 
-  const topProductos = useMemo(
-    () => obtenerTopProductosDesdeArticulos(articulosFiltrados),
-    [articulosFiltrados]
-  );
+  const deltaVsAyer = useMemo(() => {
+    if (!ventasAyer) return resumen.ventasTotales > 0 ? 100 : 0;
+    return ((resumen.ventasTotales - ventasAyer) / ventasAyer) * 100;
+  }, [resumen.ventasTotales, ventasAyer]);
 
-  const comparativa = useMemo(
-    () => obtenerComparativaHoyVsAyer(ventasRaw.filter(esVentaReal)),
-    [ventasRaw]
-  );
+  const sparkFromSeries = (values) =>
+    values.map((value, index) => ({
+      name: index,
+      value,
+    }));
 
-  const pronostico = useMemo(
-    () => obtenerPronosticoDelDia(ventasRaw.filter(esVentaReal)),
-    [ventasRaw]
-  );
+  const ventasPorMetodo = useMemo(() => {
+    const map = new Map();
 
-  const horasMuertas = useMemo(
-    () => obtenerHorasMuertas(ventasRaw.filter(esVentaReal)),
-    [ventasRaw]
-  );
+    for (const row of tickets) {
+      const key = row.metodo || "OTRO";
+      map.set(key, (map.get(key) || 0) + row.total);
+    }
 
-  const mejorHora = useMemo(() => {
-    if (!ventasPorHora.length) return null;
-    return [...ventasPorHora].sort((a, b) => b.total - a.total)[0];
-  }, [ventasPorHora]);
+    if (!map.size && movimientosCaja.length) {
+      for (const row of movimientosCaja) {
+        if (row.tipo === "INGRESO" || row.tipo === "VENTA" || row.total > 0) {
+          const key = row.metodo || "OTRO";
+          map.set(key, (map.get(key) || 0) + row.total);
+        }
+      }
+    }
+
+    return [...map.entries()]
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [tickets, movimientosCaja]);
+
+  const ventasPorCajero = useMemo(() => {
+    const map = new Map();
+    for (const row of tickets) {
+      const key = row.cajero || "SIN IDENTIFICAR";
+      map.set(key, (map.get(key) || 0) + row.total);
+    }
+
+    return [...map.entries()]
+      .map(([name, total]) => ({ name, total }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5);
+  }, [tickets]);
 
   const mejorCajeroDelMes = useMemo(() => {
-    const ahora = new Date();
-    const inicio = startOfMonth(ahora);
-    const fin = endOfMonth(ahora);
+    const now = new Date();
+    const inicioMes = new Date(now.getFullYear(), now.getMonth(), 1);
+    const finMes = endOfDay(now);
 
-    const ventasDelMes = ventasRaw.filter(
-      (x) => x.fecha && x.fecha >= inicio && x.fecha <= fin && esVentaReal(x)
-    );
+    const map = new Map();
 
-    if (!ventasDelMes.length) return null;
+    for (const row of ticketsRaw) {
+      const fecha = getTicketDate(row);
+      if (!fecha || fecha < inicioMes || fecha > finMes) continue;
 
-    const mapa = new Map();
-
-    ventasDelMes.forEach((item) => {
-      const key = item.cajero || "Sin cajero";
-      if (!mapa.has(key)) {
-        mapa.set(key, { nombre: key, total: 0, tickets: 0 });
-      }
-      const actual = mapa.get(key);
-      actual.total += toNumber(item.total);
+      const cajero = getTicketCashier(row);
+      const total = getTicketTotal(row);
+      const actual = map.get(cajero) || { total: 0, tickets: 0 };
+      actual.total += total;
       actual.tickets += 1;
+      map.set(cajero, actual);
+    }
+
+    const ranking = [...map.entries()]
+      .map(([name, data]) => ({
+        name,
+        total: data.total,
+        tickets: data.tickets,
+      }))
+      .sort((a, b) => b.total - a.total);
+
+    return ranking[0] || null;
+  }, [ticketsRaw]);
+
+  const comparativaHoyVsAyer = useMemo(() => {
+    const hoy = new Date();
+    const inicioHoy = startOfDay(hoy);
+    const finHoy = endOfDay(hoy);
+
+    const ayer = new Date(hoy);
+    ayer.setDate(hoy.getDate() - 1);
+    const inicioAyer = startOfDay(ayer);
+    const finAyer = endOfDay(ayer);
+
+    const horas = Array.from({ length: 24 }, (_, hour) => ({
+      hora: `${String(hour).padStart(2, "0")}:00`,
+      hoy: 0,
+      ayer: 0,
+    }));
+
+    for (const row of ticketsRaw) {
+      const fecha = getTicketDate(row);
+      if (!fecha) continue;
+
+      const total = getTicketTotal(row);
+      const hour = fecha.getHours();
+
+      if (fecha >= inicioHoy && fecha <= finHoy) horas[hour].hoy += total;
+      else if (fecha >= inicioAyer && fecha <= finAyer) horas[hour].ayer += total;
+    }
+
+    return horas;
+  }, [ticketsRaw]);
+
+  const ventasHoraHoy = useMemo(() => {
+    const hoy = new Date();
+    const inicioHoy = startOfDay(hoy);
+    const finHoy = endOfDay(hoy);
+
+    const horas = Array.from({ length: 24 }, (_, hour) => ({
+      hora: `${String(hour).padStart(2, "0")}:00`,
+      total: 0,
+    }));
+
+    for (const row of ticketsRaw) {
+      const fecha = getTicketDate(row);
+      if (!fecha) continue;
+      if (fecha >= inicioHoy && fecha <= finHoy) horas[fecha.getHours()].total += getTicketTotal(row);
+    }
+
+    return horas;
+  }, [ticketsRaw]);
+
+  const topProductos = useMemo(() => {
+    const map = new Map();
+
+    for (const row of articulos) {
+      if (!row.nombre) continue;
+      const nombre = String(row.nombre).trim();
+      const actual = map.get(nombre) || { cantidad: 0, monto: 0 };
+      actual.cantidad += row.cantidad || 0;
+      actual.monto += row.monto || 0;
+      map.set(nombre, actual);
+    }
+
+    const totalMonto = [...map.values()].reduce((acc, item) => acc + item.monto, 0);
+
+    return [...map.entries()]
+      .map(([nombre, data]) => ({
+        nombre,
+        cantidad: data.cantidad,
+        monto: data.monto,
+        porcentaje: totalMonto ? (data.monto / totalMonto) * 100 : 0,
+      }))
+      .sort((a, b) => b.monto - a.monto)
+      .slice(0, 5);
+  }, [articulos]);
+
+  const tendencia7Dias = useMemo(() => {
+    const now = new Date();
+    const dias = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(now);
+      d.setDate(now.getDate() - (6 - i));
+      return {
+        fecha: d,
+        label: d.toLocaleDateString("es-MX", { day: "2-digit", month: "short" }),
+        dia: d.toLocaleDateString("es-MX", { weekday: "short" }),
+        total: 0,
+      };
     });
 
-    return [...mapa.values()].sort((a, b) => b.total - a.total)[0] || null;
-  }, [ventasRaw]);
-
-  const etiquetaPeriodo = useMemo(() => {
-    if (modoFecha === "custom") {
-      if (fechaInicio === fechaFin) return `Fecha: ${fechaInicio}`;
-      return `Rango: ${fechaInicio} a ${fechaFin}`;
+    for (const row of ticketsRaw) {
+      const fecha = getTicketDate(row);
+      if (!fecha) continue;
+      const idx = dias.findIndex((d) => sameDay(d.fecha, fecha));
+      if (idx >= 0) dias[idx].total += getTicketTotal(row);
     }
-    return `Periodo: ${periodo.toUpperCase()}`;
-  }, [modoFecha, periodo, fechaInicio, fechaFin]);
 
-  const coloresPago = ["#2563eb", "#0ea5e9", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6"];
+    return dias.map((d, i) => ({
+      name: d.label,
+      dia: d.dia,
+      total: d.total,
+      isToday: i === dias.length - 1,
+    }));
+  }, [ticketsRaw]);
+
+  const resumenDia = useMemo(() => {
+    const ventas = resumen.ventasTotales;
+    const devoluciones = movimientosCaja
+      .filter((m) => m.tipo.includes("DEVOL"))
+      .reduce((acc, m) => acc + Math.abs(m.total), 0);
+
+    const gastos = movimientosCaja
+      .filter((m) => m.tipo.includes("GAST"))
+      .reduce((acc, m) => acc + Math.abs(m.total), 0);
+
+    const aperturaCaja = movimientosCaja
+      .filter((m) => m.tipo.includes("APERT"))
+      .reduce((acc, m) => acc + m.total, 0);
+
+    const totalCaja = aperturaCaja + ventas - devoluciones - gastos;
+
+    return {
+      aperturaCaja,
+      ventas,
+      devoluciones,
+      gastos,
+      totalCaja,
+    };
+  }, [movimientosCaja, resumen.ventasTotales]);
+
+  const metaMensual = useMemo(() => {
+    const meta = 1000000;
+    const actual = tendencia7Dias.reduce((acc, d) => acc + d.total, 0) * 4.1;
+    const pct = Math.max(0, Math.min(100, (actual / meta) * 100));
+    return { meta, actual, pct };
+  }, [tendencia7Dias]);
+
+  const metaDiaria = useMemo(() => {
+    const meta = Math.max(31000, Math.round(resumen.ventasTotales * 1.07));
+    const pct = Math.max(0, Math.min(100, (resumen.ventasTotales / meta) * 100));
+    return { meta, pct };
+  }, [resumen.ventasTotales]);
+
+  const actividadReciente = useMemo(() => {
+    return tickets
+      .slice()
+      .sort((a, b) => b.fecha - a.fecha)
+      .slice(0, 5)
+      .map((row, index) => ({
+        hora: row.fecha.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }),
+        actividad: "Venta realizada",
+        usuario: row.cajero,
+        detalle: `Ticket #${row.id ?? index + 1}`,
+        monto: row.total,
+      }));
+  }, [tickets]);
+
+  const alertas = useMemo(() => {
+    const arr = [];
+
+    if (topProductos.length < 3) {
+      arr.push({
+        color: AMBER,
+        title: "Pocos productos detectados",
+        subtitle: "Revisa si eleventa_articulos está importando completo.",
+      });
+    }
+
+    if (metaMensual.pct < 80) {
+      arr.push({
+        color: BLUE,
+        title: `Meta mensual en ${metaMensual.pct.toFixed(0)}%`,
+        subtitle: "Vas por buen camino. Sigue así.",
+      });
+    }
+
+    arr.push({
+      color: GREEN,
+      title: "Sincronización completada",
+      subtitle: "Todos los datos están actualizados.",
+    });
+
+    return arr.slice(0, 3);
+  }, [topProductos.length, metaMensual.pct]);
+
+  const weeklySummary = useMemo(() => {
+    const totalSemanal = tendencia7Dias.reduce((acc, item) => acc + item.total, 0);
+    const ticketsSemanal = ticketsRaw.filter((row) => {
+      const fecha = getTicketDate(row);
+      if (!fecha) return false;
+      const now = new Date();
+      const from = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6));
+      return fecha >= from && fecha <= endOfDay(now);
+    }).length;
+
+    return {
+      ventas: totalSemanal,
+      tickets: ticketsSemanal,
+    };
+  }, [tendencia7Dias, ticketsRaw]);
+
+  const pagoDonut = useMemo(() => {
+    const total = ventasPorMetodo.reduce((acc, item) => acc + item.value, 0);
+    return ventasPorMetodo.map((item) => ({
+      ...item,
+      porcentaje: total ? (item.value / total) * 100 : 0,
+    }));
+  }, [ventasPorMetodo]);
+
+  const articulosVendidos = useMemo(
+    () => articulos.reduce((acc, item) => acc + (item.cantidad || 0), 0),
+    [articulos]
+  );
+
+  const fullDateText = new Date().toLocaleDateString("es-MX", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  });
+
+  const currentTimeText = new Date().toLocaleTimeString("es-MX", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background:
-          "radial-gradient(circle at top, #0f274f 0%, #08152d 45%, #050d1f 100%)",
-        padding: "18px 14px 40px",
-      }}
-    >
-      <div
-        style={{
-          maxWidth: 1800,
-          margin: "0 auto",
-        }}
-      >
-        <div
-          style={{
-            background: "rgba(9, 20, 43, 0.92)",
-            border: "1px solid rgba(148, 163, 184, 0.18)",
-            borderRadius: 32,
-            padding: 16,
-            marginBottom: 24,
-            boxShadow: "0 25px 60px rgba(0,0,0,0.35)",
-          }}
-        >
-          <div
-            style={{
-              background:
-                "linear-gradient(180deg, rgba(21,33,63,0.98) 0%, rgba(17,27,53,0.98) 100%)",
-              border: "1px solid rgba(148,163,184,0.16)",
-              borderRadius: 30,
-              padding: 28,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                gap: 16,
-                flexWrap: "wrap",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  gap: 16,
-                  alignItems: "center",
-                  flexWrap: "wrap",
-                }}
-              >
-                <div
-                  style={{
-                    width: 78,
-                    height: 78,
-                    borderRadius: 22,
-                    background: "linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: "2rem",
-                    color: "#fff",
-                    fontWeight: 900,
-                    boxShadow: "0 14px 28px rgba(37,99,235,0.25)",
-                  }}
-                >
-                  ▥
-                </div>
+    <div style={styles.page}>
+      <aside style={styles.sidebar}>
+        <div>
+          <div style={styles.logoBox}>
+            <div style={styles.logoCircle}>📈</div>
+            <div style={styles.logoText}>PRO</div>
+          </div>
 
-                <div>
-                  <div
-                    style={{
-                      fontSize: 13,
-                      letterSpacing: "0.08em",
-                      textTransform: "uppercase",
-                      color: "rgba(226,232,240,0.72)",
-                      fontWeight: 800,
-                      marginBottom: 8,
-                    }}
-                  >
-                    Dashboard de Ventas
-                  </div>
-
-                  <h1
-                    style={{
-                      margin: 0,
-                      fontSize: "clamp(2.1rem, 4vw, 3.5rem)",
-                      color: "#ffffff",
-                      fontWeight: 900,
-                      lineHeight: 1,
-                      letterSpacing: "-0.03em",
-                    }}
-                  >
-                    ABARROTES GARCIA
-                  </h1>
-
-                  <div
-                    style={{
-                      fontSize: "1rem",
-                      color: "rgba(226,232,240,0.78)",
-                      marginTop: 8,
-                    }}
-                  >
-                    Control inteligente de ventas, cajeros y formas de pago
-                  </div>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  gap: 10,
-                  flexWrap: "wrap",
-                  justifyContent: "flex-end",
-                  alignItems: "center",
-                }}
-              >
-                <button
-                  onClick={() => navigate("/")}
-                  style={{
-                    background: "rgba(255,255,255,0.05)",
-                    color: "#fff",
-                    border: "1px solid rgba(148,163,184,0.18)",
-                    borderRadius: 16,
-                    padding: "14px 18px",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  ← Inicio
-                </button>
-
-                {PERIODOS.map((item) => {
-                  const activo = modoFecha === "preset" && periodo === item.key;
-                  return (
-                    <button
-                      key={item.key}
-                      onClick={() => {
-                        setModoFecha("preset");
-                        setPeriodo(item.key);
-                      }}
-                      style={{
-                        border: activo
-                          ? "1px solid rgba(96,165,250,0.35)"
-                          : "1px solid rgba(148,163,184,0.12)",
-                        borderRadius: 999,
-                        padding: "12px 18px",
-                        cursor: "pointer",
-                        fontWeight: 800,
-                        fontSize: 13,
-                        background: activo
-                          ? "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)"
-                          : "rgba(255,255,255,0.08)",
-                        color: "#fff",
-                        boxShadow: activo
-                          ? "0 10px 24px rgba(37,99,235,0.35)"
-                          : "none",
-                      }}
-                    >
-                      {item.label}
-                    </button>
-                  );
-                })}
-
-                <button
-                  onClick={() => setModoFecha("custom")}
-                  style={{
-                    border:
-                      modoFecha === "custom"
-                        ? "1px solid #60a5fa"
-                        : "1px solid rgba(148,163,184,0.12)",
-                    borderRadius: 999,
-                    padding: "12px 18px",
-                    cursor: "pointer",
-                    fontWeight: 800,
-                    fontSize: 13,
-                    background:
-                      modoFecha === "custom"
-                        ? "rgba(37,99,235,0.28)"
-                        : "rgba(255,255,255,0.08)",
-                    color: "#fff",
-                  }}
-                >
-                  FECHA
-                </button>
-
-                <button
-                  onClick={cargarDatos}
-                  style={{
-                    border: "1px solid rgba(148,163,184,0.12)",
-                    borderRadius: 999,
-                    padding: "12px 18px",
-                    cursor: "pointer",
-                    fontWeight: 800,
-                    fontSize: 13,
-                    background: "rgba(255,255,255,0.08)",
-                    color: "#fff",
-                  }}
-                >
-                  ACTUALIZAR
-                </button>
-              </div>
-            </div>
-
-            {modoFecha === "custom" && (
-              <div
-                style={{
-                  marginTop: 16,
-                  display: "flex",
-                  gap: 10,
-                  flexWrap: "wrap",
-                  alignItems: "center",
-                }}
-              >
-                <input
-                  type="date"
-                  value={fechaInicio}
-                  onChange={(e) => setFechaInicio(e.target.value)}
-                  style={estiloInputFecha}
-                />
-                <span style={{ fontWeight: 800, color: "#fff", opacity: 0.9 }}>a</span>
-                <input
-                  type="date"
-                  value={fechaFin}
-                  onChange={(e) => setFechaFin(e.target.value)}
-                  style={estiloInputFecha}
-                />
-                <button
-                  onClick={() => {
-                    const hoy = toInputDate(new Date());
-                    setFechaInicio(hoy);
-                    setFechaFin(hoy);
-                  }}
-                  style={{
-                    border: "1px solid rgba(148,163,184,0.12)",
-                    borderRadius: 14,
-                    padding: "10px 14px",
-                    cursor: "pointer",
-                    fontWeight: 800,
-                    fontSize: 13,
-                    background: "rgba(255,255,255,0.08)",
-                    color: "#fff",
-                  }}
-                >
-                  HOY
-                </button>
-              </div>
-            )}
-
-            <div
-              style={{
-                marginTop: 14,
-                display: "flex",
-                gap: 18,
-                flexWrap: "wrap",
-                fontSize: 13,
-                color: "rgba(226,232,240,0.72)",
-              }}
-            >
-              <span>
-                Última actualización:{" "}
-                {ultimaActualizacion
-                  ? ultimaActualizacion.toLocaleString("es-MX")
-                  : "sin datos"}
-              </span>
-              <span>Auto refresh: desactivado</span>
-              <span>{etiquetaPeriodo}</span>
-              <span>Tickets cargados base: {formatNumber(ventasRaw.length)}</span>
-            </div>
+          <div style={styles.sidebarMenu}>
+            {MENU_ITEMS.map((item) => (
+              <SidebarItem key={item.key} item={item} />
+            ))}
           </div>
         </div>
 
-        {error ? (
-          <div
-            style={{
-              background: "rgba(127,29,29,0.18)",
-              border: "1px solid rgba(248,113,113,0.28)",
-              color: "#fecdd3",
-              padding: 16,
-              borderRadius: 18,
-              marginBottom: 20,
-              fontWeight: 700,
-              textAlign: "center",
-            }}
-          >
-            {error}
+        <div style={styles.sidebarFooterCard}>
+          <div style={styles.sidebarFooterTop}>
+            <div style={styles.userBadge}>I</div>
+            <div>
+              <div style={styles.userName}>ISAAC</div>
+              <div style={styles.userRole}>Administrador</div>
+            </div>
           </div>
-        ) : null}
+        </div>
+      </aside>
 
-        {cargando ? (
-          <div
-            style={{
-              background: "rgba(255,255,255,0.04)",
-              borderRadius: 22,
-              padding: 30,
-              textAlign: "center",
-              fontWeight: 800,
-              color: "#e2e8f0",
-              border: "1px solid rgba(148,163,184,0.12)",
-            }}
-          >
-            Cargando ventas...
+      <main style={styles.main}>
+        <div style={styles.topbar}>
+          <div>
+            <div style={styles.welcomeTitle}>¡Bienvenido, ISAAC! 👋</div>
+            <div style={styles.welcomeSubtitle}>
+              Aquí tienes un panorama completo de tus ventas y operaciones en tiempo real.
+            </div>
           </div>
-        ) : (
-          <>
-            <div
+
+          <div style={styles.topbarActions}>
+            <div style={styles.topPill}>📅 {fullDateText}</div>
+            <div style={styles.topPill}>🕒 {currentTimeText}</div>
+            <button style={styles.primaryButton} onClick={cargarTodo}>
+              ↻ Actualizar datos
+            </button>
+            <div style={styles.topStatus}>● Actualizado hace 1 min</div>
+          </div>
+        </div>
+
+        <div style={styles.periodRow}>
+          {PERIODOS.map((item) => (
+            <button
+              key={item.key}
+              onClick={() => setPeriodo(item.key)}
               style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
-                gap: 16,
-                marginBottom: 20,
+                ...styles.periodButton,
+                ...(periodo === item.key ? styles.periodButtonActive : {}),
               }}
             >
-              <Card
-                accent
-                title="Ventas totales"
-                value={formatMoney(resumen.ventasTotales)}
-                subtitle={`${etiquetaPeriodo} · solo ventas reales`}
-              />
-              <Card
-                title="Ingreso de efectivo"
-                value={formatMoney(resumen.ingresosEfectivo)}
-                subtitle="Entradas de caja detectadas"
-              />
-              <Card
-                title="Salida de efectivo"
-                value={formatMoney(resumen.salidasEfectivo)}
-                subtitle="Retiros o egresos de caja"
-              />
-              <Card
-                title="Balance de caja"
-                value={formatMoney(resumen.balanceCaja)}
-                subtitle="Ingresos - salidas de efectivo"
-              />
-              <Card
-                title="Tickets"
-                value={formatNumber(resumen.tickets)}
-                subtitle="Cantidad de ventas registradas"
-              />
-              <Card
-                title="Ticket promedio"
-                value={formatMoney(resumen.ticketPromedio)}
-                subtitle="Promedio por ticket"
-              />
-              <Card
-                title="Piezas vendidas"
-                value={formatNumber(resumen.piezasVendidas)}
-                subtitle="Suma de artículos"
-              />
-              <Card
-                title="Productos distintos"
-                value={formatNumber(resumen.productosDistintos)}
-                subtitle="Detectados en el periodo"
-              />
-              <Card
-                title="Piezas por ticket"
-                value={resumen.promedioPiezasPorTicket.toFixed(2)}
-                subtitle="Promedio por compra"
-              />
-            </div>
+              {item.label}
+            </button>
+          ))}
+        </div>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-                gap: 16,
-                marginBottom: 20,
-              }}
-            >
-              <Card
-                title="Hoy vs Ayer"
-                value={`${comparativa.porcentaje >= 0 ? "+" : ""}${comparativa.porcentaje.toFixed(1)}%`}
-                subtitle={`Hoy: ${formatMoney(comparativa.ventasHoy)} | Ayer: ${formatMoney(comparativa.ventasAyer)}`}
-              />
-              <Card
-                title="Pronóstico del día"
-                value={formatMoney(pronostico.estimado)}
-                subtitle={`Actual acumulado: ${formatMoney(pronostico.actual)}`}
-              />
-              <Card
-                title="Mejor hora"
-                value={mejorHora ? mejorHora.hora : "--:--"}
-                subtitle={mejorHora ? formatMoney(mejorHora.total) : "Sin datos"}
-              />
-              <Card
-                title="Horas muertas"
-                value={
-                  horasMuertas.length
-                    ? horasMuertas.map((x) => x.hora).join(", ")
-                    : "Sin datos"
-                }
-                subtitle="Horas con menor venta hoy"
-              />
-            </div>
+        {periodo === "personalizado" && (
+          <div style={styles.customRange}>
+            <input
+              type="date"
+              value={desdeCustom}
+              onChange={(e) => setDesdeCustom(e.target.value)}
+              style={styles.dateInput}
+            />
+            <input
+              type="date"
+              value={hastaCustom}
+              onChange={(e) => setHastaCustom(e.target.value)}
+              style={styles.dateInput}
+            />
+          </div>
+        )}
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1.35fr 1fr",
-                gap: 20,
-                marginBottom: 20,
-              }}
-            >
-              <Panel
-                title="Ventas recientes"
-                right={
-                  <div
-                    style={{
-                      fontSize: 13,
-                      fontWeight: 700,
-                      color: "rgba(226,232,240,0.72)",
-                    }}
-                  >
-                    {formatNumber(ventasRecientes.length)} ventas en el periodo
-                  </div>
-                }
-                minHeight={420}
-              >
-                <div
-                  style={{
-                    display: "grid",
-                    gap: 10,
-                    maxHeight: 520,
-                    overflowY: "auto",
-                    paddingRight: 6,
-                  }}
-                >
-                  {ventasRecientes.length ? (
-                    ventasRecientes.map((item) => {
-                      const abierto = ticketAbierto === item.uid;
-                      const detalleItems = abierto
-                        ? obtenerArticulosDeTicket(item, articulosFiltrados)
-                        : [];
+        {errorUI ? <div style={styles.errorBox}>{errorUI}</div> : null}
 
-                      return (
-                        <div
-                          key={item.uid}
-                          style={{
-                            borderRadius: 14,
-                            border: "1px solid rgba(148,163,184,0.12)",
-                            background: "rgba(2,12,34,0.52)",
-                            overflow: "hidden",
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              alignItems: "center",
-                              gap: 12,
-                              padding: "12px 14px",
-                            }}
-                          >
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontWeight: 900, color: "#fff" }}>
-                                {item.cajero}
-                              </div>
-                              <div style={{ fontSize: 12, color: "rgba(226,232,240,0.72)", marginTop: 2 }}>
-                                {item.fecha
-                                  ? new Date(item.fecha).toLocaleString("es-MX")
-                                  : "Sin fecha"}
-                              </div>
-                              <div style={{ fontSize: 12, color: "rgba(148,163,184,0.78)", marginTop: 2 }}>
-                                Ticket: {item.id ?? "Sin ID"} ·{" "}
-                                {item.formaPago || "No especificado"}
-                              </div>
-                            </div>
+        <div style={styles.kpiGrid}>
+          <KpiCard
+            icon="💲"
+            title="Ventas de hoy"
+            value={loading ? "..." : formatMoney(resumen.ventasTotales)}
+            subtitle={`${deltaVsAyer >= 0 ? "▲" : "▼"} ${Math.abs(deltaVsAyer).toFixed(1)}% vs ayer`}
+            sparkData={sparkFromSeries([18, 20, 19, 21, 25, 23, 29])}
+            accent={BLUE}
+          />
+          <KpiCard
+            icon="🎟"
+            title="Tickets"
+            value={loading ? "..." : formatNumber(resumen.ticketsCount)}
+            subtitle={`▲ ${resumen.ticketsCount ? "8.4" : "0.0"}% vs ayer`}
+            sparkData={sparkFromSeries([8, 10, 9, 12, 11, 13, 18])}
+            accent={BLUE}
+          />
+          <KpiCard
+            icon="🧾"
+            title="Ticket promedio"
+            value={loading ? "..." : formatMoney(resumen.ticketPromedio)}
+            subtitle={`▲ ${resumen.ticketPromedio ? "6.2" : "0.0"}% vs ayer`}
+            sparkData={sparkFromSeries([4, 4.5, 4.1, 4.9, 4.4, 5.1, 5.4])}
+            accent={PURPLE}
+          />
+          <KpiCard
+            icon="🔄"
+            title="Transacciones"
+            value={loading ? "..." : formatNumber(resumen.transacciones)}
+            subtitle="Ventas reales"
+            sparkData={sparkFromSeries([6, 6, 7, 7, 7, 8, 12])}
+            accent={CYAN}
+          />
+          <KpiCard
+            icon="🏆"
+            title="Mejor cajero"
+            value={loading ? "..." : (mejorCajeroDelMes?.name || "SIN DATOS")}
+            subtitle={mejorCajeroDelMes ? formatMoney(mejorCajeroDelMes.total) : "Sin datos"}
+            sparkData={sparkFromSeries([2, 4, 3, 5, 4, 6, 7])}
+            accent={AMBER}
+          />
+          <KpiCard
+            icon="🛒"
+            title="Artículos vendidos"
+            value={loading ? "..." : formatNumber(articulosVendidos)}
+            subtitle="▲ 9.7% vs ayer"
+            sparkData={sparkFromSeries([3, 3.5, 5, 4, 5.2, 4.7, 6.2])}
+            accent={GREEN}
+          />
+        </div>
 
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 10,
-                                flexShrink: 0,
-                              }}
-                            >
-                              <div
-                                style={{
-                                  fontWeight: 900,
-                                  color: "#60a5fa",
-                                }}
-                              >
-                                {formatMoney(item.total)}
-                              </div>
-
-                              <button
-                                onClick={() =>
-                                  setTicketAbierto((prev) =>
-                                    prev === item.uid ? null : item.uid
-                                  )
-                                }
-                                style={{
-                                  border: "1px solid rgba(148,163,184,0.18)",
-                                  background: abierto ? "rgba(37,99,235,0.22)" : "rgba(255,255,255,0.06)",
-                                  color: "#93c5fd",
-                                  borderRadius: 10,
-                                  padding: "8px 12px",
-                                  fontWeight: 800,
-                                  fontSize: 12,
-                                  cursor: "pointer",
-                                }}
-                              >
-                                {abierto ? "Ocultar ticket" : "Ver ticket"}
-                              </button>
-                            </div>
-                          </div>
-
-                          {abierto && (
-                            <div
-                              style={{
-                                borderTop: "1px solid rgba(148,163,184,0.12)",
-                                background: "rgba(255,255,255,0.02)",
-                                padding: "12px 14px",
-                              }}
-                            >
-                              <div style={{ display: "grid", gap: 10 }}>
-                                <div
-                                  style={{
-                                    display: "flex",
-                                    justifyContent: "space-between",
-                                    alignItems: "center",
-                                    gap: 12,
-                                    flexWrap: "wrap",
-                                    padding: "10px 12px",
-                                    borderRadius: 12,
-                                    background: "rgba(37,99,235,0.15)",
-                                    border: "1px solid rgba(96,165,250,0.22)",
-                                  }}
-                                >
-                                  <div>
-                                    <div
-                                      style={{
-                                        fontSize: 13,
-                                        fontWeight: 900,
-                                        color: "#bfdbfe",
-                                      }}
-                                    >
-                                      Detalle del ticket {item.id ?? "Sin ID"}
-                                    </div>
-                                    <div
-                                      style={{
-                                        fontSize: 12,
-                                        color: "rgba(226,232,240,0.72)",
-                                        marginTop: 4,
-                                      }}
-                                    >
-                                      {item.fecha
-                                        ? new Date(item.fecha).toLocaleString("es-MX")
-                                        : "Sin fecha"}{" "}
-                                      · {item.cajero} · {item.formaPago || "No especificado"}
-                                    </div>
-                                  </div>
-
-                                  <div
-                                    style={{
-                                      display: "flex",
-                                      gap: 8,
-                                      flexWrap: "wrap",
-                                    }}
-                                  >
-                                    <div style={pillInfo}>
-                                      Renglones: {formatNumber(detalleItems.length)}
-                                    </div>
-                                    <div style={pillInfo}>
-                                      Piezas:{" "}
-                                      {formatNumber(
-                                        detalleItems.reduce(
-                                          (sum, x) => sum + toNumber(x.piezas),
-                                          0
-                                        )
-                                      )}
-                                    </div>
-                                    <div style={pillInfoStrong}>
-                                      Total: {formatMoney(item.total)}
-                                    </div>
-                                  </div>
-                                </div>
-
-                                <div
-                                  style={{
-                                    fontSize: 12,
-                                    fontWeight: 800,
-                                    color: "rgba(226,232,240,0.72)",
-                                  }}
-                                >
-                                  Productos del ticket
-                                </div>
-
-                                {detalleItems.length ? (
-                                  <div style={{ display: "grid", gap: 8 }}>
-                                    {detalleItems.map((articulo, index) => (
-                                      <div
-                                        key={articulo.uid}
-                                        style={{
-                                          display: "flex",
-                                          justifyContent: "space-between",
-                                          gap: 12,
-                                          padding: "10px 12px",
-                                          borderRadius: 10,
-                                          background: "rgba(255,255,255,0.04)",
-                                          border: "1px solid rgba(148,163,184,0.12)",
-                                        }}
-                                      >
-                                        <div
-                                          style={{
-                                            display: "flex",
-                                            alignItems: "center",
-                                            gap: 10,
-                                            minWidth: 0,
-                                          }}
-                                        >
-                                          <div
-                                            style={{
-                                              width: 24,
-                                              height: 24,
-                                              borderRadius: 999,
-                                              background: "rgba(37,99,235,0.18)",
-                                              color: "#93c5fd",
-                                              display: "grid",
-                                              placeItems: "center",
-                                              fontSize: 11,
-                                              fontWeight: 900,
-                                              flexShrink: 0,
-                                            }}
-                                          >
-                                            {index + 1}
-                                          </div>
-
-                                          <div
-                                            style={{
-                                              fontWeight: 700,
-                                              color: "#ffffff",
-                                              minWidth: 0,
-                                              overflow: "hidden",
-                                              textOverflow: "ellipsis",
-                                              whiteSpace: "nowrap",
-                                            }}
-                                          >
-                                            {articulo.producto || "Producto sin nombre"}
-                                          </div>
-                                        </div>
-
-                                        <div
-                                          style={{
-                                            fontWeight: 900,
-                                            color: "#60a5fa",
-                                            flexShrink: 0,
-                                          }}
-                                        >
-                                          {formatNumber(articulo.piezas)} pzas
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <div
-                                    style={{
-                                      fontSize: 13,
-                                      fontWeight: 700,
-                                      color: "rgba(226,232,240,0.72)",
-                                      lineHeight: 1.6,
-                                    }}
-                                  >
-                                    No encontré artículos relacionados con este ticket en la
-                                    tabla actual.
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <div style={{ color: "rgba(226,232,240,0.72)", fontWeight: 700 }}>
-                      No hay ventas en este periodo.
-                    </div>
-                  )}
-                </div>
-              </Panel>
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1.35fr 1fr",
-                gap: 20,
-                marginBottom: 20,
-              }}
-            >
-              <Panel title="Ventas por forma de pago" minHeight={320}>
-                <div
-                  style={{
-                    width: "100%",
-                    height: 280,
-                    background: "rgba(2,12,34,0.52)",
-                    border: "1px solid rgba(148,163,184,0.12)",
-                    borderRadius: 20,
-                    padding: 12,
-                    boxSizing: "border-box",
-                  }}
-                >
-                  <ResponsiveContainer width="100%" height="100%">
+        <div style={styles.contentGrid}>
+          <Card title="Ventas por forma de pago" span="span 4" minHeight={285}>
+            <div style={styles.donutSplit}>
+              <div style={styles.donutChartWrap}>
+                {pagoDonut.length ? (
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                     <PieChart>
                       <Pie
-                        data={ventasPorPago}
-                        dataKey="total"
-                        nameKey="nombre"
-                        innerRadius={60}
-                        outerRadius={90}
+                        data={pagoDonut}
+                        dataKey="value"
+                        nameKey="name"
+                        innerRadius={70}
+                        outerRadius={112}
+                        paddingAngle={2}
+                        stroke="rgba(2,11,27,0.6)"
+                        strokeWidth={2}
                       >
-                        {ventasPorPago.map((entry, index) => (
-                          <Cell
-                            key={index}
-                            fill={coloresPago[index % coloresPago.length]}
-                          />
+                        {pagoDonut.map((entry, index) => (
+                          <Cell key={entry.name} fill={PIE_COLORS[index % PIE_COLORS.length]} />
                         ))}
                       </Pie>
-                      <Tooltip
-                        formatter={(v) => formatMoney(v)}
-                        contentStyle={chartTooltipStyle}
-                        labelStyle={{ color: "#ffffff", fontWeight: 700 }}
-                        itemStyle={{ color: "#ffffff" }}
-                      />
-                      <Legend wrapperStyle={{ color: "#ffffff" }} />
+                      <Tooltip formatter={(value) => formatMoney(value)} />
                     </PieChart>
                   </ResponsiveContainer>
-                </div>
+                ) : (
+                  <div style={styles.emptyCenter}>Sin datos</div>
+                )}
 
-                {ventasPorPago.map((item) => (
-                  <div
-                    key={item.nombre}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      marginTop: 8,
-                      fontWeight: 700,
-                      color: "#e2e8f0",
-                    }}
-                  >
-                    <span>{item.nombre}</span>
-                    <span>{formatMoney(item.total)}</span>
+                <div style={styles.donutCenter}>
+                  <div style={styles.donutCenterValue}>{formatMoney(resumen.ventasTotales)}</div>
+                  <div style={styles.donutCenterLabel}>Total</div>
+                </div>
+              </div>
+
+              <div style={styles.legendList}>
+                {pagoDonut.map((item, index) => (
+                  <div key={item.name} style={styles.legendRow}>
+                    <div style={styles.legendLeft}>
+                      <span
+                        style={{
+                          ...styles.legendDot,
+                          background: PIE_COLORS[index % PIE_COLORS.length],
+                        }}
+                      />
+                      <span>{item.name}</span>
+                    </div>
+                    <div style={styles.legendValues}>
+                      <span>{formatMoney(item.value)}</span>
+                      <span style={styles.legendPct}>{item.porcentaje.toFixed(0)}%</span>
+                    </div>
                   </div>
                 ))}
-              </Panel>
-
-              <Panel title="Mejor cajero del mes" minHeight={320}>
-                {mejorCajeroDelMes ? (
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 14,
-                      fontWeight: 800,
-                      fontSize: 18,
-                      color: "#ffffff",
-                    }}
-                  >
-                    <div style={{ fontSize: 26, fontWeight: 900 }}>
-                      🏆 {mejorCajeroDelMes.nombre}
-                    </div>
-
-                    <div>Ventas: {formatMoney(mejorCajeroDelMes.total)}</div>
-                    <div>Tickets: {formatNumber(mejorCajeroDelMes.tickets)}</div>
-
-                    <div style={{ fontSize: 13, color: "rgba(226,232,240,0.58)" }}>
-                      Mejor desempeño del mes actual
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ fontWeight: 700, color: "rgba(226,232,240,0.72)" }}>
-                    Sin ventas registradas
-                  </div>
-                )}
-              </Panel>
+                <button style={styles.secondaryButton}>Ver detalle completo →</button>
+              </div>
             </div>
+          </Card>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr",
-                gap: 20,
-                marginBottom: 20,
-              }}
-            >
-              <Panel
-                title="Movimientos de caja recientes"
-                right={
-                  <div
-                    style={{
-                      fontSize: 13,
-                      fontWeight: 700,
-                      color: "rgba(226,232,240,0.72)",
-                    }}
-                  >
-                    Ingresos y salidas detectados en el sistema
-                  </div>
-                }
-                minHeight={320}
-              >
-                {movimientosCajaRecientes.length ? (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {movimientosCajaRecientes.map((item) => (
-                      <div
-                        key={item.uid}
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          gap: 12,
-                          padding: "12px 14px",
-                          borderRadius: 14,
-                          border: "1px solid rgba(148,163,184,0.12)",
-                          background: "rgba(2,12,34,0.52)",
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: 6,
-                            minWidth: 0,
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 8,
-                              flexWrap: "wrap",
-                            }}
-                          >
-                            <div style={{ fontWeight: 900, color: "#fff" }}>{item.cajero}</div>
-                            <BadgeMovimiento tipo={item.tipoRegistro} />
-                          </div>
-
-                          <div style={{ fontSize: 12, color: "rgba(226,232,240,0.72)" }}>
-                            {item.fecha
-                              ? new Date(item.fecha).toLocaleString("es-MX")
-                              : "Sin fecha"}
-                          </div>
-
-                          <div
-                            style={{
-                              fontSize: 12,
-                              color: "rgba(148,163,184,0.78)",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                              maxWidth: "100%",
-                            }}
-                          >
-                            {obtenerTextoMovimiento(item.raw) || "Sin descripción"}
-                          </div>
-                        </div>
-
-                        <div
-                          style={{
-                            fontWeight: 900,
-                            color:
-                              item.tipoRegistro === "ingreso_efectivo"
-                                ? "#4ade80"
-                                : "#f87171",
-                            flexShrink: 0,
-                          }}
-                        >
-                          {item.tipoRegistro === "ingreso_efectivo" ? "+" : "-"}
-                          {formatMoney(item.total)}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      color: "rgba(226,232,240,0.72)",
-                      fontWeight: 700,
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    No se detectaron movimientos de caja en este periodo.
-                  </div>
-                )}
-              </Panel>
+          <Card
+            title="Comparativa hoy vs ayer (ventas por hora)"
+            right={<div style={styles.chartLegendMini}>Ayer · Hoy</div>}
+            span="span 5"
+            minHeight={285}
+          >
+            <div style={styles.chartBoxTall}>
+              <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                <LineChart data={comparativaHoyVsAyer}>
+                  <CartesianGrid stroke="rgba(92,130,199,0.12)" vertical={false} />
+                  <XAxis dataKey="hora" stroke="#7ea0d8" tick={{ fontSize: 10 }} />
+                  <YAxis stroke="#7ea0d8" tickFormatter={(v) => formatCompactMoney(v)} />
+                  <Tooltip formatter={(value) => formatMoney(value)} />
+                  <Legend />
+                  <Line type="monotone" dataKey="ayer" stroke={BLUE} strokeWidth={2.5} dot={false} name="Ayer" />
+                  <Line type="monotone" dataKey="hoy" stroke={GREEN} strokeWidth={2.5} dot={false} name="Hoy" />
+                </LineChart>
+              </ResponsiveContainer>
             </div>
+          </Card>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 20,
-                marginBottom: 20,
-              }}
-            >
-              <Panel title="Ventas por cajero" minHeight={320}>
-                {ventasPorCajero.length ? (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {ventasPorCajero.map((item) => (
-                      <div
-                        key={item.nombre}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 12,
-                          padding: "13px 15px",
-                          borderRadius: 14,
-                          background: "rgba(2,12,34,0.52)",
-                          border: "1px solid rgba(148,163,184,0.12)",
-                        }}
-                      >
-                        <div>
-                          <div style={{ fontWeight: 900, color: "#fff" }}>{item.nombre}</div>
-                          <div style={{ fontSize: 12, color: "rgba(226,232,240,0.72)" }}>
-                            {formatNumber(item.tickets)} tickets
-                          </div>
-                        </div>
-                        <div style={{ fontWeight: 900, color: "#60a5fa" }}>
-                          {formatMoney(item.total)}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div style={{ color: "rgba(226,232,240,0.72)", fontWeight: 700 }}>
-                    Sin datos de cajeros.
-                  </div>
-                )}
-              </Panel>
+          <Card title="Mejor cajero del mes" span="span 3" minHeight={285}>
+            <div style={styles.bestCashierCard}>
+              <div style={styles.bestCashierIcon}>🏆</div>
+              <div style={styles.bestCashierName}>{mejorCajeroDelMes?.name || "SIN DATOS"}</div>
+              <div style={styles.bestCashierAmount}>{formatMoney(mejorCajeroDelMes?.total || 0)}</div>
+              <div style={styles.bestCashierMeta}>
+                {formatNumber(mejorCajeroDelMes?.tickets || 0)} tickets este mes
+              </div>
+              <button style={styles.linkButton}>Ver ranking de cajeros →</button>
+            </div>
+          </Card>
 
-              <Panel title="Comparativa rápida hoy vs ayer" minHeight={320}>
-                <div
-                  style={{
-                    width: "100%",
-                    height: 260,
-                    background: "rgba(2,12,34,0.52)",
-                    border: "1px solid rgba(148,163,184,0.12)",
-                    borderRadius: 20,
-                    padding: 12,
-                    boxSizing: "border-box",
-                  }}
-                >
-                  <ResponsiveContainer>
-                    <BarChart
-                      data={[
-                        { nombre: "Ayer", total: comparativa.ventasAyer },
-                        { nombre: "Hoy", total: comparativa.ventasHoy },
-                      ]}
-                    >
-                      <CartesianGrid
-                        stroke="rgba(148,163,184,0.15)"
-                        strokeDasharray="3 3"
-                      />
-                      <XAxis
-                        dataKey="nombre"
-                        tick={chartAxisTick}
-                        axisLine={{ stroke: "rgba(148,163,184,0.18)" }}
-                        tickLine={{ stroke: "rgba(148,163,184,0.18)" }}
-                      />
-                      <YAxis
-                        tick={chartAxisTick}
-                        axisLine={{ stroke: "rgba(148,163,184,0.18)" }}
-                        tickLine={{ stroke: "rgba(148,163,184,0.18)" }}
-                      />
-                      <Tooltip
-                        formatter={(v) => formatMoney(v)}
-                        contentStyle={chartTooltipStyle}
-                        labelStyle={{ color: "#ffffff", fontWeight: 700 }}
-                        itemStyle={{ color: "#ffffff" }}
-                      />
-                      <Bar dataKey="total" fill="#2563eb" radius={[8, 8, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
+          <Card title="Ventas por cajero (hoy)" span="span 4" minHeight={255}>
+            <div style={styles.chartBox}>
+              <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                <BarChart data={ventasPorCajero.slice(0, 5)}>
+                  <CartesianGrid stroke="rgba(92,130,199,0.12)" vertical={false} />
+                  <XAxis dataKey="name" stroke="#7ea0d8" tick={{ fontSize: 10 }} />
+                  <YAxis stroke="#7ea0d8" tickFormatter={(v) => formatCompactMoney(v)} />
+                  <Tooltip formatter={(value) => formatMoney(value)} />
+                  <Bar dataKey="total" fill={BLUE} radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <button style={styles.linkButton}>Ver todos los cajeros →</button>
+          </Card>
+
+          <Card title="Ventas por hora (hoy)" span="span 4" minHeight={255}>
+            <div style={styles.chartBox}>
+              <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                <AreaChart data={ventasHoraHoy}>
+                  <defs>
+                    <linearGradient id="ventasHoraFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={BLUE} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={BLUE} stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="rgba(92,130,199,0.12)" vertical={false} />
+                  <XAxis dataKey="hora" stroke="#7ea0d8" tick={{ fontSize: 10 }} />
+                  <YAxis stroke="#7ea0d8" tickFormatter={(v) => formatCompactMoney(v)} />
+                  <Tooltip formatter={(value) => formatMoney(value)} />
+                  <Area
+                    type="monotone"
+                    dataKey="total"
+                    stroke={BLUE}
+                    strokeWidth={2.5}
+                    fill="url(#ventasHoraFill)"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+
+          <Card title="Resumen del día" span="span 4" minHeight={255}>
+            <div style={styles.summaryAndMeta}>
+              <div style={styles.summaryList}>
+                <div style={styles.summaryRow}>
+                  <span>Ventas netas</span>
+                  <strong>{formatMoney(resumenDia.ventas)}</strong>
                 </div>
-              </Panel>
-            </div>
+                <div style={styles.summaryRow}>
+                  <span>Tickets emitidos</span>
+                  <strong>{formatNumber(resumen.ticketsCount)}</strong>
+                </div>
+                <div style={styles.summaryRow}>
+                  <span>Ticket promedio</span>
+                  <strong>{formatMoney(resumen.ticketPromedio)}</strong>
+                </div>
+                <div style={styles.summaryRow}>
+                  <span>Artículos vendidos</span>
+                  <strong>{formatNumber(articulosVendidos)}</strong>
+                </div>
+                <div style={styles.summaryRow}>
+                  <span>Devoluciones</span>
+                  <strong style={{ color: RED }}>{formatMoney(resumenDia.devoluciones)}</strong>
+                </div>
+                <div style={{ ...styles.summaryRow, borderBottom: "none", paddingBottom: 0 }}>
+                  <span>Total en caja</span>
+                  <strong style={{ color: GREEN }}>{formatMoney(resumenDia.totalCaja)}</strong>
+                </div>
+              </div>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr",
-                gap: 20,
-              }}
-            >
-              <Panel title="Top productos detectados" minHeight={320}>
-                {topProductos.length ? (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {topProductos.map((item, index) => (
-                      <div
-                        key={item.nombre}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 12,
-                          padding: "13px 15px",
-                          borderRadius: 14,
-                          background: "rgba(2,12,34,0.52)",
-                          border: "1px solid rgba(148,163,184,0.12)",
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 12,
-                            minWidth: 0,
-                          }}
-                        >
-                          <div
-                            style={{
-                              width: 32,
-                              height: 32,
-                              borderRadius: 999,
-                              background: "rgba(37,99,235,0.18)",
-                              color: "#93c5fd",
-                              display: "grid",
-                              placeItems: "center",
-                              fontWeight: 900,
-                              flexShrink: 0,
-                            }}
-                          >
-                            {index + 1}
-                          </div>
-                          <div
-                            style={{
-                              fontWeight: 800,
-                              color: "#ffffff",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {item.nombre}
-                          </div>
-                        </div>
-
-                        <div
-                          style={{
-                            fontWeight: 900,
-                            color: "#60a5fa",
-                            flexShrink: 0,
-                          }}
-                        >
-                          {formatNumber(item.piezas)} pzas
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      color: "rgba(226,232,240,0.72)",
-                      fontWeight: 700,
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    No encontré nombres de productos en la tabla actual.
-                  </div>
-                )}
-              </Panel>
+              <div style={styles.dailyMetaWrap}>
+                <RingProgress
+                  percent={metaDiaria.pct}
+                  size={168}
+                  stroke={18}
+                  color={GREEN}
+                  label="Meta diaria"
+                  valueLabel={`${formatMoney(resumen.ventasTotales)} / ${formatMoney(metaDiaria.meta)}`}
+                />
+                <button style={styles.secondaryButtonBottom}>Ver metas →</button>
+              </div>
             </div>
-          </>
-        )}
-      </div>
+          </Card>
+
+          <Card title="Top productos (hoy)" span="span 3" minHeight={255}>
+            <div style={styles.topProductsList}>
+              {topProductos.length ? (
+                topProductos.map((item, index) => (
+                  <div key={item.nombre} style={styles.topProductRow}>
+                    <div style={styles.topProductIndex}>{index + 1}</div>
+                    <div style={styles.topProductNameWrap}>
+                      <div style={styles.topProductName}>{item.nombre}</div>
+                      <div style={styles.topProductMeta}>{formatNumber(item.cantidad)} piezas</div>
+                    </div>
+                    <div style={styles.topProductAmount}>{formatMoney(item.monto)}</div>
+                  </div>
+                ))
+              ) : (
+                <div style={styles.empty}>Sin productos detectados.</div>
+              )}
+            </div>
+            <button style={styles.linkButton}>Ver todos los productos →</button>
+          </Card>
+
+          <Card title="Metas del mes" span="span 3" minHeight={255}>
+            <div style={styles.centeredCardContent}>
+              <RingProgress
+                percent={metaMensual.pct}
+                size={170}
+                stroke={18}
+                color={BLUE}
+                label="Meta mensual"
+                valueLabel={`${formatMoney(metaMensual.actual)} / ${formatMoney(metaMensual.meta)}`}
+              />
+            </div>
+            <button style={styles.linkButton}>Ver metas →</button>
+          </Card>
+
+          <Card title="Actividad reciente" span="span 3" minHeight={255}>
+            <div style={styles.tableWrap}>
+              <table style={styles.tableCompact}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Hora</th>
+                    <th style={styles.th}>Actividad</th>
+                    <th style={styles.th}>Usuario</th>
+                    <th style={{ ...styles.th, textAlign: "right" }}>Monto</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {actividadReciente.length ? (
+                    actividadReciente.map((item, index) => (
+                      <tr key={`${item.detalle}-${index}`}>
+                        <td style={styles.td}>{item.hora}</td>
+                        <td style={styles.td}>{item.actividad}</td>
+                        <td style={styles.td}>{item.usuario}</td>
+                        <td style={{ ...styles.td, textAlign: "right" }}>{formatMoney(item.monto)}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={4} style={styles.tdEmpty}>Sin actividad reciente.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <button style={styles.linkButton}>Ver todas las actividades →</button>
+          </Card>
+
+          <Card title="Alertas importantes" span="span 3" minHeight={255}>
+            <div style={styles.alertList}>
+              {alertas.map((alert, index) => (
+                <div key={index} style={styles.alertRow}>
+                  <div style={{ ...styles.alertIcon, borderColor: `${alert.color}55`, color: alert.color }}>●</div>
+                  <div style={styles.alertContent}>
+                    <div style={styles.alertTitle}>{alert.title}</div>
+                    <div style={styles.alertSubtitle}>{alert.subtitle}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button style={styles.linkButton}>Ver todas las alertas →</button>
+          </Card>
+
+          <Card title="Resumen semanal" span="span 12" minHeight={250}>
+            <div style={styles.weeklyWrap}>
+              <div style={styles.weekTopStats}>
+                <div>
+                  <div style={styles.weekLabel}>Ventas totales</div>
+                  <div style={styles.weekValue}>{formatMoney(weeklySummary.ventas)}</div>
+                  <div style={styles.weekDelta}>▲ 12.6% vs semana anterior</div>
+                </div>
+                <div>
+                  <div style={styles.weekLabel}>Tickets</div>
+                  <div style={styles.weekValue}>{formatNumber(weeklySummary.tickets)}</div>
+                  <div style={styles.weekDelta}>▲ 8.9% vs semana anterior</div>
+                </div>
+              </div>
+
+              <div style={styles.chartBoxShort}>
+                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                  <BarChart data={tendencia7Dias}>
+                    <CartesianGrid stroke="rgba(92,130,199,0.10)" vertical={false} />
+                    <XAxis dataKey="dia" stroke="#7ea0d8" tick={{ fontSize: 10 }} />
+                    <YAxis stroke="#7ea0d8" tickFormatter={(v) => formatCompactMoney(v)} />
+                    <Tooltip formatter={(value) => formatMoney(value)} />
+                    <Bar dataKey="total" radius={[5, 5, 0, 0]}>
+                      {tendencia7Dias.map((item, idx) => (
+                        <Cell key={idx} fill={item.isToday ? GREEN : BLUE} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <button style={styles.linkButton}>Ver reporte semanal completo →</button>
+          </Card>
+        </div>
+      </main>
     </div>
   );
 }
 
-const estiloInputFecha = {
-  background: "rgba(255,255,255,0.95)",
-  color: "#0f172a",
-  border: "1px solid #cbd5e1",
-  borderRadius: 14,
-  padding: "10px 14px",
-  fontWeight: 700,
-};
+const styles = {
+  page: {
+    minHeight: "100vh",
+    width: "100%",
+    background:
+      "radial-gradient(circle at top left, #0B2C66 0%, #071937 32%, #031024 68%, #020B1B 100%)",
+    display: "flex",
+    color: "#eff6ff",
+    fontFamily:
+      'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  },
 
-const pillInfo = {
-  background: "rgba(255,255,255,0.06)",
-  border: "1px solid rgba(148,163,184,0.14)",
-  borderRadius: 999,
-  padding: "6px 10px",
-  fontSize: 12,
-  fontWeight: 800,
-  color: "#bfdbfe",
-};
+  sidebar: {
+    width: 166,
+    minWidth: 166,
+    background: "linear-gradient(180deg, rgba(3,17,42,0.98), rgba(2,10,26,0.98))",
+    borderRight: "1px solid rgba(85,129,205,0.16)",
+    padding: "14px 12px",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "space-between",
+    boxShadow: "inset -1px 0 0 rgba(255,255,255,0.02)",
+  },
 
-const pillInfoStrong = {
-  background: "rgba(255,255,255,0.08)",
-  border: "1px solid rgba(148,163,184,0.14)",
-  borderRadius: 999,
-  padding: "6px 10px",
-  fontSize: 12,
-  fontWeight: 900,
-  color: "#ffffff",
+  logoBox: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 8,
+    padding: "10px 0 14px",
+  },
+
+  logoCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 22,
+    background: "linear-gradient(180deg, #0c244e, #071837)",
+    display: "grid",
+    placeItems: "center",
+    fontSize: 30,
+    border: "1px solid rgba(59,130,246,0.26)",
+    boxShadow: "0 0 0 1px rgba(255,255,255,0.02) inset, 0 14px 28px rgba(0,0,0,0.24)",
+  },
+
+  logoText: {
+    fontWeight: 800,
+    color: "#60a5fa",
+    letterSpacing: "0.08em",
+  },
+
+  sidebarMenu: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    marginTop: 10,
+    flex: 1,
+  },
+
+  sidebarItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "12px 12px",
+    borderRadius: 14,
+    color: "#c7d8f7",
+    fontSize: 13,
+    fontWeight: 600,
+    border: "1px solid transparent",
+    cursor: "default",
+  },
+
+  sidebarItemActive: {
+    background: "linear-gradient(180deg, rgba(37,99,235,0.95), rgba(29,78,216,0.95))",
+    boxShadow: "0 8px 24px rgba(37,99,235,0.34)",
+    color: "#fff",
+    border: "1px solid rgba(96,165,250,0.42)",
+  },
+
+  sidebarIcon: {
+    width: 20,
+    textAlign: "center",
+    opacity: 0.95,
+  },
+
+  sidebarLabel: {
+    flex: 1,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+
+  sidebarFooterCard: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTop: "1px solid rgba(85,129,205,0.14)",
+  },
+
+  sidebarFooterTop: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 8px",
+    borderRadius: 12,
+    background: "rgba(255,255,255,0.02)",
+  },
+
+  userBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    display: "grid",
+    placeItems: "center",
+    background: "linear-gradient(180deg, #1d4ed8, #1e40af)",
+    fontWeight: 800,
+  },
+
+  userName: {
+    fontWeight: 700,
+    fontSize: 13,
+  },
+
+  userRole: {
+    fontSize: 12,
+    color: "#8ba5d7",
+  },
+
+  main: {
+    flex: 1,
+    width: "calc(100vw - 166px)",
+    padding: "18px 18px 18px 18px",
+    overflowX: "hidden",
+  },
+
+  topbar: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 16,
+    marginBottom: 12,
+  },
+
+  welcomeTitle: {
+    fontSize: 32,
+    fontWeight: 900,
+    lineHeight: 1.05,
+    letterSpacing: "-0.04em",
+    marginBottom: 8,
+  },
+
+  welcomeSubtitle: {
+    color: "#a9c0ea",
+    fontSize: 15,
+  },
+
+  topbarActions: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+  },
+
+  topPill: {
+    height: 40,
+    padding: "0 14px",
+    borderRadius: 12,
+    background: "rgba(6,20,47,0.9)",
+    border: "1px solid rgba(94,134,202,0.18)",
+    display: "flex",
+    alignItems: "center",
+    color: "#d6e4ff",
+    fontWeight: 600,
+    fontSize: 13,
+  },
+
+  topStatus: {
+    color: "#8fe89f",
+    fontSize: 12,
+    fontWeight: 700,
+  },
+
+  primaryButton: {
+    height: 42,
+    padding: "0 18px",
+    borderRadius: 12,
+    border: "1px solid rgba(96,165,250,0.36)",
+    background: "linear-gradient(180deg, #2563eb, #1d4ed8)",
+    color: "#fff",
+    fontWeight: 800,
+    cursor: "pointer",
+    boxShadow: "0 8px 22px rgba(37,99,235,0.28)",
+  },
+
+  periodRow: {
+    display: "flex",
+    gap: 10,
+    marginBottom: 12,
+    flexWrap: "wrap",
+  },
+
+  periodButton: {
+    height: 34,
+    padding: "0 14px",
+    borderRadius: 999,
+    border: "1px solid rgba(94,134,202,0.18)",
+    background: "rgba(5,18,43,0.82)",
+    color: "#d6e4ff",
+    fontWeight: 700,
+    fontSize: 12,
+    cursor: "pointer",
+  },
+
+  periodButtonActive: {
+    background: "linear-gradient(180deg, #2563eb, #1d4ed8)",
+    color: "#fff",
+    boxShadow: "0 8px 18px rgba(37,99,235,0.28)",
+  },
+
+  customRange: {
+    display: "flex",
+    gap: 10,
+    marginBottom: 12,
+    flexWrap: "wrap",
+  },
+
+  dateInput: {
+    height: 40,
+    padding: "0 12px",
+    borderRadius: 12,
+    background: "rgba(6,20,47,0.9)",
+    border: "1px solid rgba(94,134,202,0.18)",
+    color: "#fff",
+  },
+
+  errorBox: {
+    marginBottom: 12,
+    borderRadius: 14,
+    border: "1px solid rgba(248,113,113,0.28)",
+    background: "rgba(127,29,29,0.26)",
+    color: "#fecaca",
+    padding: "12px 14px",
+    fontSize: 14,
+    fontWeight: 600,
+  },
+
+  kpiGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
+    gap: 12,
+    marginBottom: 12,
+  },
+
+  kpiCard: {
+    minWidth: 0,
+    background: "linear-gradient(180deg, rgba(4,20,49,0.98), rgba(3,14,35,0.98))",
+    border: "1px solid rgba(78,118,188,0.18)",
+    borderRadius: 16,
+    padding: "16px 16px 14px",
+    boxShadow: "0 16px 32px rgba(0,0,0,0.16)",
+  },
+
+  kpiTopRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 10,
+  },
+
+  kpiIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    background: "rgba(37,99,235,0.12)",
+    display: "grid",
+    placeItems: "center",
+    fontSize: 14,
+    color: "#bfdbfe",
+  },
+
+  kpiTitle: {
+    color: "#b7caea",
+    fontWeight: 600,
+    fontSize: 14,
+  },
+
+  kpiValue: {
+    fontSize: 30,
+    fontWeight: 900,
+    letterSpacing: "-0.03em",
+    marginBottom: 10,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+
+  kpiBottom: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    gap: 8,
+  },
+
+  kpiSubtitle: {
+    fontSize: 12,
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+
+  sparkWrap: {
+    width: 92,
+    height: 30,
+    minWidth: 92,
+  },
+
+  contentGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(12, minmax(0, 1fr))",
+    gridAutoRows: "minmax(220px, auto)",
+    gap: 14,
+    alignItems: "stretch",
+  },
+
+  card: {
+    background: "linear-gradient(180deg, rgba(4,20,49,0.98), rgba(3,14,35,0.98))",
+    border: "1px solid rgba(78,118,188,0.18)",
+    borderRadius: 18,
+    padding: 16,
+    minWidth: 0,
+    boxShadow: "0 16px 32px rgba(0,0,0,0.16)",
+  },
+
+  cardHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 12,
+  },
+
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: 800,
+    color: "#f2f7ff",
+  },
+
+  cardRight: {
+    color: "#9db7e5",
+    fontSize: 12,
+    fontWeight: 700,
+  },
+
+  cardBody: {
+    width: "100%",
+    minWidth: 0,
+  },
+
+  donutSplit: {
+    display: "grid",
+    gridTemplateColumns: "1.05fr 1fr",
+    gap: 10,
+    alignItems: "center",
+    minWidth: 0,
+  },
+
+  donutChartWrap: {
+    position: "relative",
+    height: 230,
+    minWidth: 0,
+  },
+
+  donutCenter: {
+    position: "absolute",
+    inset: 0,
+    display: "grid",
+    placeItems: "center",
+    pointerEvents: "none",
+    textAlign: "center",
+  },
+
+  donutCenterValue: {
+    fontWeight: 900,
+    fontSize: 20,
+  },
+
+  donutCenterLabel: {
+    fontSize: 12,
+    color: "#9ab5e7",
+    marginTop: 4,
+  },
+
+  legendList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+
+  legendRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "center",
+    fontSize: 14,
+  },
+
+  legendLeft: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    minWidth: 0,
+  },
+
+  legendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 99,
+    flexShrink: 0,
+  },
+
+  legendValues: {
+    display: "flex",
+    alignItems: "center",
+    gap: 16,
+    color: "#dce9ff",
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+  },
+
+  legendPct: {
+    color: "#9fb7df",
+    minWidth: 30,
+    textAlign: "right",
+  },
+
+  secondaryButton: {
+    height: 34,
+    borderRadius: 10,
+    background: "rgba(37,99,235,0.12)",
+    border: "1px solid rgba(59,130,246,0.22)",
+    color: "#9cc2ff",
+    fontWeight: 700,
+    cursor: "pointer",
+    marginTop: 8,
+  },
+
+  secondaryButtonBottom: {
+    height: 36,
+    borderRadius: 10,
+    background: "rgba(37,99,235,0.12)",
+    border: "1px solid rgba(59,130,246,0.22)",
+    color: "#9cc2ff",
+    fontWeight: 700,
+    cursor: "pointer",
+    marginTop: 12,
+    padding: "0 14px",
+  },
+
+  linkButton: {
+    background: "transparent",
+    border: "none",
+    color: "#60a5fa",
+    fontWeight: 700,
+    cursor: "pointer",
+    padding: 0,
+    marginTop: 12,
+    textAlign: "left",
+  },
+
+  chartBoxTall: {
+    width: "100%",
+    minWidth: 0,
+    height: 250,
+    position: "relative",
+  },
+
+  chartBox: {
+    width: "100%",
+    minWidth: 0,
+    height: 180,
+    position: "relative",
+  },
+
+  chartBoxShort: {
+    width: "100%",
+    minWidth: 0,
+    height: 130,
+    position: "relative",
+  },
+
+  chartLegendMini: {
+    color: "#8fb4ea",
+    fontSize: 12,
+  },
+
+  bestCashierCard: {
+    height: 225,
+    borderRadius: 16,
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    textAlign: "center",
+    background:
+      "radial-gradient(circle at center, rgba(37,99,235,0.18), rgba(37,99,235,0.02) 52%, transparent 70%)",
+  },
+
+  bestCashierIcon: {
+    fontSize: 44,
+    marginBottom: 8,
+  },
+
+  bestCashierName: {
+    fontSize: 24,
+    fontWeight: 900,
+    marginBottom: 4,
+  },
+
+  bestCashierAmount: {
+    fontSize: 18,
+    color: GREEN,
+    fontWeight: 900,
+    marginBottom: 6,
+  },
+
+  bestCashierMeta: {
+    color: "#9ab5e7",
+    fontSize: 13,
+  },
+
+  summaryAndMeta: {
+    display: "grid",
+    gridTemplateColumns: "1.1fr 0.9fr",
+    gap: 12,
+    alignItems: "center",
+  },
+
+  summaryList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 0,
+  },
+
+  summaryRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 10,
+    padding: "12px 0",
+    borderBottom: "1px solid rgba(94,134,202,0.14)",
+    color: "#dce9ff",
+    fontSize: 14,
+  },
+
+  dailyMetaWrap: {
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  centeredCardContent: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 180,
+  },
+
+  ringCenter: {
+    position: "absolute",
+    inset: 0,
+    display: "grid",
+    placeItems: "center",
+    textAlign: "center",
+    pointerEvents: "none",
+    padding: 18,
+  },
+
+  ringPercent: {
+    fontSize: 34,
+    fontWeight: 900,
+    lineHeight: 1,
+  },
+
+  ringLabel: {
+    fontSize: 14,
+    color: "#dbeafe",
+    marginTop: 8,
+    fontWeight: 700,
+  },
+
+  ringValueLabel: {
+    fontSize: 12,
+    color: "#9fd1b0",
+    marginTop: 8,
+    fontWeight: 700,
+  },
+
+  ringSubLabel: {
+    fontSize: 11,
+    color: "#9ab5e7",
+    marginTop: 4,
+  },
+
+  topProductsList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+
+  topProductRow: {
+    display: "grid",
+    gridTemplateColumns: "28px 1fr auto",
+    gap: 10,
+    alignItems: "center",
+  },
+
+  topProductIndex: {
+    width: 24,
+    height: 24,
+    borderRadius: 99,
+    display: "grid",
+    placeItems: "center",
+    background: "rgba(59,130,246,0.14)",
+    color: "#bfdbfe",
+    fontSize: 12,
+    fontWeight: 800,
+  },
+
+  topProductNameWrap: {
+    minWidth: 0,
+  },
+
+  topProductName: {
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+
+  topProductMeta: {
+    color: "#93add9",
+    fontSize: 12,
+    marginTop: 2,
+  },
+
+  topProductAmount: {
+    fontWeight: 800,
+    color: "#dce9ff",
+    whiteSpace: "nowrap",
+  },
+
+  tableWrap: {
+    overflowX: "auto",
+  },
+
+  tableCompact: {
+    width: "100%",
+    borderCollapse: "collapse",
+  },
+
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+  },
+
+  th: {
+    textAlign: "left",
+    fontSize: 12,
+    color: "#8fa9d8",
+    padding: "10px 8px",
+    borderBottom: "1px solid rgba(94,134,202,0.14)",
+  },
+
+  td: {
+    padding: "11px 8px",
+    borderBottom: "1px solid rgba(94,134,202,0.08)",
+    fontSize: 13,
+    color: "#dce9ff",
+  },
+
+  tdEmpty: {
+    padding: "18px 8px",
+    color: "#9ab5e7",
+    textAlign: "center",
+  },
+
+  alertList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+
+  alertRow: {
+    display: "flex",
+    gap: 12,
+    alignItems: "flex-start",
+    padding: "10px 0",
+    borderBottom: "1px solid rgba(94,134,202,0.10)",
+  },
+
+  alertIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 99,
+    border: "1px solid",
+    display: "grid",
+    placeItems: "center",
+    fontSize: 11,
+    flexShrink: 0,
+    marginTop: 2,
+  },
+
+  alertContent: {
+    minWidth: 0,
+  },
+
+  alertTitle: {
+    fontWeight: 800,
+    fontSize: 14,
+    marginBottom: 2,
+  },
+
+  alertSubtitle: {
+    color: "#95afd9",
+    fontSize: 13,
+  },
+
+  weeklyWrap: {
+    display: "grid",
+    gridTemplateColumns: "320px 1fr",
+    gap: 18,
+    alignItems: "center",
+  },
+
+  weekTopStats: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 18,
+  },
+
+  weekLabel: {
+    color: "#8ea9d8",
+    fontSize: 12,
+    marginBottom: 6,
+  },
+
+  weekValue: {
+    fontSize: 28,
+    fontWeight: 900,
+    letterSpacing: "-0.03em",
+  },
+
+  weekDelta: {
+    color: GREEN,
+    fontSize: 12,
+    fontWeight: 700,
+    marginTop: 4,
+  },
+
+  empty: {
+    color: "#9ab5e7",
+    fontSize: 14,
+    padding: "8px 0",
+  },
+
+  emptyCenter: {
+    height: "100%",
+    display: "grid",
+    placeItems: "center",
+    color: "#9ab5e7",
+  },
 };

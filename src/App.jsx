@@ -6,6 +6,9 @@ import Home from "./componentes/Home";
 import Login from "./componentes/login";
 import ProtectedRoute from "./componentes/ProtectedRoute";
 import InventarioDashboard from "./componentes/inventario/InventarioDashboard";
+import ScannerInventario from "./pages/ScannerInventario";
+
+<Route path="/scanner" element={<ScannerInventario />} />
 
 export default function App() {
   return (
