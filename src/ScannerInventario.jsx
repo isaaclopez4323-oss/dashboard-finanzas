@@ -1,94 +1,112 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Html5Qrcode } from "html5-qrcode";
 import { supabase } from "./supabase";
 
 export default function ScannerInventario() {
-  const scannerRef = useRef(null);
   const [codigo, setCodigo] = useState("");
   const [producto, setProducto] = useState(null);
+  const [mensaje, setMensaje] = useState("Escanea un producto");
   const [scanning, setScanning] = useState(false);
 
-  const iniciarScanner = async () => {
-    const scanner = new Html5Qrcode("reader");
+  const buscarProducto = async (codigoEscaneado) => {
+    setCodigo(codigoEscaneado);
+    setMensaje("Buscando producto...");
+    setProducto(null);
 
-    scannerRef.current = scanner;
+    const { data, error } = await supabase
+      .from("eleventa_inventario")
+      .select("*")
+      .limit(5000);
 
-    await scanner.start(
-      { facingMode: "environment" },
-      { fps: 10, qrbox: 250 },
-      async (decodedText) => {
-        await scanner.stop();
-        setScanning(false);
-        buscarProducto(decodedText);
-      }
+    if (error) {
+      setMensaje("Error: " + error.message);
+      return;
+    }
+
+    const limpio = String(codigoEscaneado).trim();
+
+    const encontrado = data?.find((p) =>
+      Object.values(p).some((v) => String(v ?? "").trim() === limpio)
     );
+
+    if (!encontrado) {
+      setMensaje("No encontrado en inventario");
+      return;
+    }
+
+    setProducto(encontrado);
+    setMensaje("Producto encontrado");
   };
 
-  const buscarProducto = async (codigoEscaneado) => {
-  setCodigo(codigoEscaneado);
+  const iniciarScanner = async () => {
+    setScanning(true);
+    setProducto(null);
+    setCodigo("");
+    setMensaje("Apunta al código de barras");
 
-  const { data, error } = await supabase
-    .from("eleventa_inventario")
-    .select("*")
-    .limit(2000);
+    setTimeout(async () => {
+      const scanner = new Html5Qrcode("reader");
 
-  if (error) {
-    alert(error.message);
-    return;
-  }
+      await scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: 260 },
+        async (decodedText) => {
+          await scanner.stop();
+          setScanning(false);
+          buscarProducto(decodedText);
+        }
+      );
+    }, 300);
+  };
 
-  // 🔥 BUSCA EN TODAS LAS COLUMNAS
-  const encontrado = data?.find((p) =>
-    Object.values(p).some((v) =>
-      String(v).includes(codigoEscaneado)
-    )
-  );
+  const nombre =
+    producto?.descripcion ||
+    producto?.producto_nombre ||
+    producto?.nombre ||
+    producto?.DESCRIPCION ||
+    "Producto sin nombre";
 
-  console.log("PRODUCTO ENCONTRADO:", encontrado);
+  const costo =
+    producto?.precio_costo ||
+    producto?.costo ||
+    producto?.precio_compra ||
+    producto?.PRECIO_USADO ||
+    0;
 
-  setProducto(encontrado || null);
-};
+  const venta =
+    producto?.precio_venta ||
+    producto?.precio ||
+    producto?.PRECIO_FINAL ||
+    0;
+
+  const stock =
+    producto?.existencia ||
+    producto?.stock ||
+    producto?.inventario ||
+    producto?.EXISTENCIA ||
+    0;
 
   return (
-    <div style={styles.container}>
+    <div style={styles.page}>
       <h1 style={styles.title}>Escáner Inventario</h1>
 
-      {scanning && <div id="reader" style={styles.camera} />}
+      <button onClick={iniciarScanner} style={styles.button}>
+        Escanear código
+      </button>
 
-      {!scanning && (
-        <button style={styles.button} onClick={() => {
-          setProducto(null);
-          setCodigo("");
-          setScanning(true);
-          setTimeout(iniciarScanner, 300);
-        }}>
-          Escanear código
-        </button>
-      )}
+      {scanning && <div id="reader" style={styles.reader}></div>}
 
       <div style={styles.card}>
-        <p style={styles.codigo}>{codigo || "Sin escanear"}</p>
+        <div style={styles.code}>{codigo || "Sin código"}</div>
+        <div style={styles.msg}>{mensaje}</div>
 
-        {producto ? (
+        {producto && (
           <>
-            <h2>{producto.descripcion || producto.producto_nombre}</h2>
-
-            <p style={{ color: "#22c55e" }}>
-              Costo: ${producto.precio_costo || producto.PRECIO_USADO || 0}
-            </p>
-
-            <p style={{ color: "#3b82f6" }}>
-              Venta: ${producto.precio_venta || producto.PRECIO_FINAL || 0}
-            </p>
-
-            <p style={{ color: "#a855f7" }}>
-              Stock: {producto.existencia || producto.EXISTENCIA || 0}
-            </p>
+            <h2 style={styles.name}>{nombre}</h2>
+            <p style={styles.cost}>Costo: ${Number(costo || 0).toFixed(2)}</p>
+            <p style={styles.sale}>Venta: ${Number(venta || 0).toFixed(2)}</p>
+            <p style={styles.stock}>Inventario: {Number(stock || 0)} pzas</p>
           </>
-        ) : (
-          <p style={{ color: "#aaa" }}>
-            Escanea un producto
-          </p>
         )}
       </div>
     </div>
@@ -96,35 +114,68 @@ export default function ScannerInventario() {
 }
 
 const styles = {
-  container: {
+  page: {
     minHeight: "100vh",
-    background: "#0a0f1c",
+    background: "#070d19",
     color: "white",
-    padding: "20px",
+    padding: 24,
+    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI",
   },
   title: {
-    fontSize: "28px",
-    marginBottom: "20px",
-  },
-  camera: {
-    width: "100%",
-    maxWidth: "400px",
-    margin: "auto",
+    fontSize: 30,
+    fontWeight: 900,
+    marginBottom: 24,
   },
   button: {
-    padding: "15px",
     background: "#2563eb",
     color: "white",
-    borderRadius: "10px",
     border: "none",
-    marginBottom: "20px",
+    borderRadius: 14,
+    padding: "16px 22px",
+    fontSize: 16,
+    fontWeight: 800,
+    marginBottom: 24,
+  },
+  reader: {
+    width: "100%",
+    maxWidth: 420,
+    marginBottom: 24,
+    borderRadius: 20,
+    overflow: "hidden",
   },
   card: {
     background: "#111827",
-    padding: "20px",
-    borderRadius: "15px",
+    borderRadius: 22,
+    padding: 24,
   },
-  codigo: {
+  code: {
     color: "#60a5fa",
+    fontSize: 20,
+    fontWeight: 800,
+    marginBottom: 8,
+  },
+  msg: {
+    color: "#cbd5e1",
+    fontSize: 18,
+    marginBottom: 18,
+  },
+  name: {
+    fontSize: 24,
+    marginBottom: 12,
+  },
+  cost: {
+    color: "#22c55e",
+    fontSize: 20,
+    fontWeight: 800,
+  },
+  sale: {
+    color: "#3b82f6",
+    fontSize: 20,
+    fontWeight: 800,
+  },
+  stock: {
+    color: "#a855f7",
+    fontSize: 20,
+    fontWeight: 800,
   },
 };
