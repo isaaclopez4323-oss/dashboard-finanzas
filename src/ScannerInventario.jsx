@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Html5Qrcode } from "html5-qrcode";
-import { supabase } from "../supabase";
+import { supabase } from "./supabase";
 
 export default function ScannerInventario() {
   const scannerRef = useRef(null);
